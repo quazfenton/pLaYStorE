@@ -207,7 +207,7 @@ class WindowsSandbox(BaseSandbox):
             
             try:
                 # Parse the command safely to avoid shell injection
-                cmd_parts = shlex.split(command)
+                cmd_parts = shlex.split(command, posix=False)
                 result = subprocess.run(
                     cmd_parts,
                     timeout=timeout,

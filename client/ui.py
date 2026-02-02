@@ -437,18 +437,19 @@ class AppStoreUI:
                 app.is_installed = True
                 app.install_path = f"/opt/apps/{app.app_id}"
                 
-                self.status_var.set(f"Successfully installed {app.name}")
-                messagebox.showinfo("Success", f"{app.name} installed successfully!")
+                def update_ui():
+                    self.status_var.set(f"Successfully installed {app.name}")
+                    messagebox.showinfo("Success", f"{app.name} installed successfully!")
+                    if self.current_view == ViewMode.CATALOG:
+                        self.show_catalog()
+                    elif self.current_view == ViewMode.SEARCH:
+                        self.display_search_results()
                 
-                # Refresh the view
-                if self.current_view == ViewMode.CATALOG:
-                    self.show_catalog()
-                elif self.current_view == ViewMode.SEARCH:
-                    self.display_search_results()
+                self.root.after(0, update_ui)
                     
             except Exception as e:
-                self.status_var.set("Installation failed")
-                messagebox.showerror("Error", f"Failed to install {app.name}: {str(e)}")
+                self.root.after(0, lambda: self.status_var.set("Installation failed"))
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to install {app.name}: {e!s}"))
         
         threading.Thread(target=do_install, daemon=True).start()
     

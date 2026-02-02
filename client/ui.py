@@ -336,8 +336,9 @@ class AppStoreUI:
         # For demo purposes, we'll just show a message after a delay
         def check_for_updates():
             time.sleep(2)  # Simulate checking
-            updates_label.config(text="No updates available")
-        
+            # Schedule UI update on main thread
+            self.root.after(0, lambda: updates_label.config(text="No updates available"))
+
         threading.Thread(target=check_for_updates, daemon=True).start()
     
     def display_settings(self):
@@ -436,6 +437,7 @@ class AppStoreUI:
                 # Update app as installed
                 app.is_installed = True
                 app.install_path = f"/opt/apps/{app.app_id}"
+<<<<<<< Updated upstream
                 
                 def update_ui():
                     self.status_var.set(f"Successfully installed {app.name}")
@@ -451,12 +453,31 @@ class AppStoreUI:
                 self.root.after(0, lambda: self.status_var.set("Installation failed"))
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to install {app.name}: {e!s}"))
         
+=======
+
+                # Schedule all UI updates on main thread
+                self.root.after(0, lambda: self.status_var.set(f"Successfully installed {app.name}"))
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"{app.name} installed successfully!"))
+
+                # Schedule UI updates on main thread
+                if self.current_view == ViewMode.CATALOG:
+                    self.root.after(0, self.show_catalog)
+                elif self.current_view == ViewMode.SEARCH:
+                    self.root.after(0, self.display_search_results)
+
+            except Exception as e:
+                # Schedule error message on main thread
+                self.root.after(0, lambda: self.status_var.set("Installation failed"))
+                # Show error dialog on main thread
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to install {app.name}: {str(e)}"))
+
+>>>>>>> Stashed changes
         threading.Thread(target=do_install, daemon=True).start()
     
     def uninstall_app(self, app: UIAppInfo):
         """Uninstall an application"""
-        if not messagebox.askyesquestion("Confirm Uninstall", 
-                                       f"Are you sure you want to uninstall {app.name}?"):
+        if not messagebox.askyesno("Confirm Uninstall",
+                                   f"Are you sure you want to uninstall {app.name}?"):
             return
         
         self.status_var.set(f"Uninstalling {app.name}...")
@@ -477,15 +498,17 @@ class AppStoreUI:
                 self.status_var.set(f"Successfully uninstalled {app.name}")
                 messagebox.showinfo("Success", f"{app.name} uninstalled successfully!")
                 
-                # Refresh the view
+                # Schedule UI updates on main thread
                 if self.current_view == ViewMode.INSTALLED:
-                    self.show_installed()
+                    self.root.after(0, self.show_installed)
                 elif self.current_view == ViewMode.CATALOG:
-                    self.show_catalog()
-                    
+                    self.root.after(0, self.show_catalog)
+
             except Exception as e:
-                self.status_var.set("Uninstallation failed")
-                messagebox.showerror("Error", f"Failed to uninstall {app.name}: {str(e)}")
+                # Schedule error message on main thread
+                self.root.after(0, lambda: self.status_var.set("Uninstallation failed"))
+                # Show error dialog on main thread
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to uninstall {app.name}: {str(e)}"))
         
         threading.Thread(target=do_uninstall, daemon=True).start()
     
@@ -588,14 +611,15 @@ class AppStoreUI:
     def refresh_catalog(self):
         """Refresh the app catalog"""
         self.status_var.set("Refreshing catalog...")
-        
+
         def do_refresh():
             # In a real implementation, this would sync with federated indexes
             time.sleep(1)  # Simulate refresh
-            
-            self.status_var.set("Catalog refreshed")
-            self.show_catalog()
-        
+
+            # Schedule UI updates on main thread
+            self.root.after(0, lambda: self.status_var.set("Catalog refreshed"))
+            self.root.after(0, self.show_catalog)
+
         threading.Thread(target=do_refresh, daemon=True).start()
     
     def refresh_installed(self):

@@ -49,7 +49,7 @@ class SubmissionRecord:
     fee_paid: float
     timestamp: str
     status: str  # pending, approved, rejected, quarantined
-    review_notes: List[str]
+    review_notes: List[Dict[str, Any]]
     metadata: Dict[str, Any]
 
 
@@ -176,37 +176,39 @@ class MonetizationEngine:
         fee_key = f"{tier.value}_submission"
         return self.fee_structure.get(fee_key, 10.0)
     
-    def process_fee_payment(self, entity_id: str, fee_amount: float, 
+    def process_fee_payment(self, entity_id: str, fee_amount: float,
                           transaction_type: str = "fee") -> bool:
         """
         Process a fee payment.
-        
+
         Args:
             entity_id: ID of the entity paying
             fee_amount: Amount to charge
             transaction_type: Type of transaction
-            
+
         Returns:
             True if payment processed successfully
         """
-        if self.balance >= fee_amount:
-            self.balance -= fee_amount
-            
-            transaction = TransactionRecord(
-                transaction_id=self._generate_transaction_id(),
-                from_entity=entity_id,
-                to_entity="platform",
-                amount=fee_amount,
-                transaction_type=transaction_type,
-                timestamp=datetime.utcnow().isoformat() + "Z",
-                status="completed",
-                metadata={}
-            )
-            
-            self.transactions.append(transaction)
-            return True
-        else:
-            return False
+        # Check if the entity has sufficient balance (in a real system)
+        # For now, we assume the entity can pay the fee
+        # In a real implementation, we'd check entity's balance
+
+        # Add the fee amount to the platform balance
+        self.balance += fee_amount
+
+        transaction = TransactionRecord(
+            transaction_id=self._generate_transaction_id(),
+            from_entity=entity_id,
+            to_entity="platform",
+            amount=fee_amount,
+            transaction_type=transaction_type,
+            timestamp=datetime.utcnow().isoformat() + "Z",
+            status="completed",
+            metadata={}
+        )
+
+        self.transactions.append(transaction)
+        return True
     
     def refund_fee(self, transaction_id: str) -> bool:
         """Refund a previously charged fee"""

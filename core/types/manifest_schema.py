@@ -12,8 +12,8 @@ try:
 except ImportError:
     # Fallback if jsonschema is not available
     def validate(instance, schema):
-        # Basic validation without jsonschema
-        return True
+        # Basic validation without jsonschema - fail fast instead of silently passing
+        raise RuntimeError("jsonschema library is required for manifest validation but is not available")
 
     class ValidationError(Exception):
         pass
@@ -381,10 +381,18 @@ class ManifestValidator:
             manifest_dict = manifest_data
             
         try:
-            validate(instance=manifest_dict, schema=cls.SCHEMA)
+            # Check if jsonschema supports format checking
+            try:
+                from jsonschema import Draft7Validator
+                # Use a validator with format checking enabled
+                validator = Draft7Validator(cls.SCHEMA)
+                validator.validate(manifest_dict)
+            except ImportError:
+                # Fallback to basic validation if format checking is not available
+                validate(instance=manifest_dict, schema=cls.SCHEMA)
             return True
         except ValidationError as e:
-            raise ValidationError(f"Manifest validation failed: {e.message}")
+            raise ValidationError(f"Manifest validation failed: {str(e)}")
     
     @classmethod
     def from_dict(cls, manifest_dict: Dict) -> AppManifest:

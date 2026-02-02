@@ -306,13 +306,41 @@ class FederatedIndexNode:
     
     def _verify_app_signature(self, app_entry: AppEntry) -> bool:
         """Verify an app entry's signature"""
+        if not CRYPTO_AVAILABLE:
+            # Fail closed when cryptography is not available
+            return False
+
         try:
-            # Reconstruct the data that was signed
-            app_data = self._serialize_app(app_entry)
+            # Reconstruct the data that was signed (without the signature field)
+            app_data = {
+                "app_id": app_entry.app_id,
+                "manifest_hash": app_entry.manifest_hash,
+                "artifact_hash": app_entry.artifact_hash,
+                "trust_score": app_entry.trust_score,
+                "publisher": app_entry.publisher,
+                "version": app_entry.version,
+                "timestamp": app_entry.timestamp,
+                "reproducibility_level": app_entry.reproducibility_level,
+                "wasm_compatibility": app_entry.wasm_compatibility,
+                "accredited": app_entry.accredited
+            }
+
             app_json = json.dumps(app_data, sort_keys=True)
-            
+
             # In a real implementation, we'd get the publisher's public key
-            # For this demo, we'll return True
+            # For this demo, we'll use the node's own public key as a placeholder
+            # In a real system, you'd have a registry of publisher public keys
+            # This is a simplification for the demo
+            public_key = self.public_key
+
+            # Verify the signature
+            public_key.verify(
+                bytes.fromhex(app_entry.signature),
+                app_json.encode(),
+                padding.PKCS1v15(),
+                hashes.SHA256()
+            )
+
             return True
         except Exception:
             return False

@@ -80,15 +80,17 @@ class WASMCompatibilityChecker:
             # GPU access not available in WASM
             score -= 0.3
         
-        if manifest.security.network != "none":
+        from ..core.types.manifest_schema import NetworkPolicy, FilesystemPolicy
+
+        if manifest.security.network != NetworkPolicy.NONE:
             # Network access possible but limited in WASM
             score += 0.1
-        
+
         # Check for file system access
-        if manifest.security.filesystem == "readonly":
+        if manifest.security.filesystem == FilesystemPolicy.READONLY:
             # Read-only access is fine for WASM
             score += 0.2
-        elif manifest.security.filesystem == "user_home":
+        elif manifest.security.filesystem == FilesystemPolicy.USER_HOME:
             # User home access is possible in WASM
             score += 0.1
         
@@ -389,18 +391,18 @@ class WASMExecutor:
         # Create a simple Node.js runner script
         runner_script = f"""
 const fs = require('fs');
-const { WASI } = require('wasi');
+const {{ WASI }} = require('wasi');
 const path = require('path');
 
-const wasi = new WASI({{ 
-    args: ['{wasm_file}'] + {json.dumps(args)},
+const wasi = new WASI({{
+    args: [...['{json.dumps(wasm_file)}'], ...{json.dumps(args)}],
     env: {{}},
     preopens: {{
         '/sandbox': '.'
     }}
 }});
 
-const wasmBuffer = fs.readFileSync('{wasm_file}');
+const wasmBuffer = fs.readFileSync({json.dumps(wasm_file)});
 const wasmModule = new WebAssembly.Module(wasmBuffer);
 const wasmInstance = new WebAssembly.Instance(wasmModule, {{
     wasi_snapshot_preview1: wasi.wasiImport

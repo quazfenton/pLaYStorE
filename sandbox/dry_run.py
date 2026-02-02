@@ -48,8 +48,10 @@ class DryRunSandbox:
     """Sandbox for safe execution and malware detection"""
     
     def __init__(self, security_level: SecurityLevel = SecurityLevel.STRICT):
+        from ..sandbox.base import SandboxFactory
         self.security_level = security_level
-        self.sandbox = BaseSandbox()
+        # Use SandboxFactory to create a concrete sandbox instance
+        self.sandbox = SandboxFactory.create_sandbox(SandboxType.NATIVE, security_level)
     
     def execute_dry_run(self, command: str, timeout: int = 30, 
                        cwd: Optional[str] = None, env: Optional[Dict] = None) -> Tuple[SandboxResult, BehavioralTelemetry]:
@@ -206,9 +208,9 @@ class DryRunSandbox:
                     risk_score += 0.4
         
         # Check for overly permissive security settings
-        if manifest.security.network != "none":
+        if manifest.security.network != NetworkPolicy.NONE:
             risk_score += 0.2
-        if manifest.security.filesystem != "readonly":
+        if manifest.security.filesystem != FilesystemPolicy.READONLY:
             risk_score += 0.1
         if manifest.security.allow_gpu:
             risk_score += 0.1
@@ -249,6 +251,10 @@ class MalwareDetector:
             "recommendation": "quarantine"
         }
         
+        # Initialize overall risk from static analysis
+        static_risk = self._risk_to_score(results["static_analysis"])
+        results["overall_risk"] = static_risk
+
         # Perform dynamic analysis if a test command is provided
         if test_command:
             try:
@@ -257,16 +263,15 @@ class MalwareDetector:
                 )
                 results["telemetry"] = telemetry
                 results["dynamic_analysis"] = self.dry_run_sandbox.analyze_behavior(telemetry)
-                
+
                 # Calculate overall risk based on both analyses
-                static_risk = self._risk_to_score(results["static_analysis"])
                 dynamic_risk = self._risk_to_score(results["dynamic_analysis"])
                 results["overall_risk"] = max(static_risk, dynamic_risk)
-                
+
             except Exception as e:
                 results["error"] = f"Dry-run failed: {str(e)}"
-                results["overall_risk"] = 0.9  # High risk if we can't test
-        
+                results["overall_risk"] = max(0.9, static_risk)  # High risk if we can't test, but consider static risk
+
         # Determine recommendation based on risk
         if results["overall_risk"] >= 0.8:
             results["recommendation"] = "block"
@@ -276,7 +281,7 @@ class MalwareDetector:
             results["recommendation"] = "sandbox_only"
         else:
             results["recommendation"] = "approve"
-        
+
         return results
     
     def _risk_to_score(self, malware_result: MalwareDetectionResult) -> float:

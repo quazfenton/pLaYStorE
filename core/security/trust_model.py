@@ -346,6 +346,11 @@ class SecurityOrchestrator:
             else:
                 return False, f"Unknown operation: {operation}"
     
+    def get_policy(self, app_id: str) -> Optional[SecurityPolicy]:
+        """Get security policy for an app"""
+        with self.lock:
+            return self.active_policies.get(app_id)
+
     def update_policy(self, app_id: str, new_policy: SecurityPolicy):
         """Update security policy for an app"""
         with self.lock:
@@ -516,10 +521,10 @@ class SecurityManager:
     def get_security_report(self, app_id: str) -> Dict[str, Any]:
         """Generate a security report for an application"""
         trust_score = self.registry.get_trust_score(app_id)
-        security_policy = self.orchestrator.active_policies.get(app_id)
+        security_policy = self.orchestrator.get_policy(app_id)
         audits = self.registry.get_audit_history(app_id)
         revocations = self.registry.get_revocation_history(app_id)
-        
+
         return {
             "app_id": app_id,
             "trust_score": trust_score.overall if trust_score else 0.0,

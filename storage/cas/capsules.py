@@ -267,8 +267,9 @@ class CapsuleBuilder:
                     except InvalidSignature:
                         return False, "Invalid signature", None
                 else:
-                    # Skip signature verification if cryptography is not available
-                    pass  # In production, this would be a security risk
+                    # Fail verification if cryptography is not available
+                    # This prevents tampered capsules from passing verification
+                    return False, "Cryptography unavailable - cannot verify signature", None
                 
                 # Reconstruct metadata object
                 metadata = CapsuleMetadata(
@@ -303,54 +304,141 @@ class CapsuleBuilder:
             return False, f"Error verifying capsule: {e}", None
 
 
+class CapsuleVerifier:
+    """Verifies capsule integrity and authenticity using a known public key"""
+
+    def __init__(self, cas_storage: ContentAddressableStorage, public_key=None):
+        self.cas = cas_storage
+        self.public_key = public_key
+
+    def verify_capsule_integrity(self, capsule_path: str, public_key=None) -> Tuple[bool, str, Optional[CapsuleMetadata]]:
+        """
+        Verify the integrity of a capsule using a specific public key.
+
+        Args:
+            capsule_path: Path to the capsule file
+            public_key: Public key to use for verification (overrides instance key if provided)
+
+        Returns:
+            Tuple of (is_valid, message, metadata)
+        """
+        try:
+            with zipfile.ZipFile(capsule_path, 'r') as zipf:
+                # Extract metadata
+                metadata_content = zipf.read("metadata.json").decode()
+                metadata_dict = json.loads(metadata_content)
+
+                # Verify signature
+                signature_hex = metadata_dict.pop("signature", "")
+                if not signature_hex:
+                    return False, "No signature found in capsule", None
+
+                metadata_json = json.dumps(metadata_dict, sort_keys=True).encode()
+
+                # Use provided public key or instance public key
+                verification_key = public_key or self.public_key
+
+                if CRYPTO_AVAILABLE and verification_key:
+                    try:
+                        verification_key.verify(
+                            bytes.fromhex(signature_hex),
+                            metadata_json,
+                            padding.PKCS1v15(),
+                            hashes.SHA256()
+                        )
+                    except InvalidSignature:
+                        return False, "Invalid signature", None
+                elif not CRYPTO_AVAILABLE:
+                    # Fail verification if cryptography is not available
+                    # This prevents tampered capsules from passing verification
+                    return False, "Cryptography unavailable - cannot verify signature", None
+                else:
+                    # No public key provided for verification
+                    return False, "Public key not provided for signature verification", None
+
+                # Reconstruct metadata object
+                metadata = CapsuleMetadata(
+                    capsule_id=metadata_dict["capsule_id"],
+                    app_id=metadata_dict["app_id"],
+                    version=metadata_dict["version"],
+                    platform=metadata_dict["platform"],
+                    manifest_hash=metadata_dict["manifest_hash"],
+                    artifact_hashes=metadata_dict["artifact_hashes"],
+                    signature=signature_hex,
+                    timestamp=metadata_dict["timestamp"],
+                    trust_score=metadata_dict["trust_score"],
+                    reproducibility_level=metadata_dict["reproducibility_level"],
+                    dependencies=metadata_dict["dependencies"]
+                )
+
+                # Verify content hashes
+                for artifact_hash in metadata.artifact_hashes:
+                    if not self.cas.has_content(artifact_hash):
+                        return False, f"Missing artifact: {artifact_hash}", metadata
+
+                if not self.cas.has_content(metadata.manifest_hash):
+                    return False, f"Missing manifest: {metadata.manifest_hash}", metadata
+
+                return True, "Capsule verified successfully", metadata
+
+        except zipfile.BadZipFile:
+            return False, "Invalid capsule file format", None
+        except KeyError as e:
+            return False, f"Missing required field in capsule: {e}", None
+        except Exception as e:
+            return False, f"Error verifying capsule: {e}", None
+
+
 class OfflineInstaller:
     """Installs applications from offline capsules"""
-    
-    def __init__(self, cas_storage: ContentAddressableStorage):
+
+    def __init__(self, cas_storage: ContentAddressableStorage, public_key=None):
         self.cas = cas_storage
-    
-    def install_from_capsule(self, capsule_path: str, install_path: str) -> Tuple[bool, str, Optional[AppManifest]]:
+        self.verifier = CapsuleVerifier(cas_storage, public_key)
+
+    def install_from_capsule(self, capsule_path: str, install_path: str, public_key=None) -> Tuple[bool, str, Optional[AppManifest]]:
         """
         Install an application from an offline capsule.
-        
+
         Args:
             capsule_path: Path to the capsule file
             install_path: Path to install the application
-            
+            public_key: Public key to use for verification (optional)
+
         Returns:
             Tuple of (success, message, manifest)
         """
         # Verify capsule integrity first
-        is_valid, message, metadata = CapsuleBuilder(self.cas).verify_capsule_integrity(capsule_path)
+        is_valid, message, metadata = self.verifier.verify_capsule_integrity(capsule_path, public_key)
         if not is_valid:
             return False, f"Invalid capsule: {message}", None
-        
+
         try:
             # Create installation directory
             install_dir = Path(install_path)
             install_dir.mkdir(parents=True, exist_ok=True)
-            
+
             with zipfile.ZipFile(capsule_path, 'r') as zipf:
                 # Extract manifest
                 manifest_content = zipf.read("manifest.yaml").decode()
                 manifest_dict = json.loads(manifest_content)
-                
+
                 # Reconstruct manifest object
                 from altstore.core.types.manifest_schema import ManifestValidator
                 manifest = ManifestValidator.from_dict(manifest_dict)
-                
+
                 # Extract and install artifacts
                 for i, artifact_hash in enumerate(metadata.artifact_hashes):
                     artifact_data = self.cas.retrieve_content(artifact_hash)
                     if artifact_data is None:
                         return False, f"Artifact not found in storage: {artifact_hash}", None
-                    
+
                     # Write artifact to installation directory
                     artifact_filename = f"artifact_{i}"
                     artifact_path = install_dir / artifact_filename
                     with open(artifact_path, 'wb') as f:
                         f.write(artifact_data)
-                
+
                 # Create installation manifest
                 install_manifest = {
                     "installed_at": datetime.utcnow().isoformat() + "Z",
@@ -362,23 +450,24 @@ class OfflineInstaller:
                     "trust_score": metadata.trust_score,
                     "reproducibility_level": metadata.reproducibility_level
                 }
-                
+
                 with open(install_dir / "install_manifest.json", 'w') as f:
                     json.dump(install_manifest, f, indent=2)
-                
+
                 return True, f"Successfully installed {metadata.app_id} version {metadata.version}", manifest
-                
+
         except Exception as e:
             return False, f"Installation failed: {e}", None
 
 
 class CapsuleManager:
     """Main manager for capsule operations"""
-    
+
     def __init__(self, storage_path: str = "./capsule_storage"):
         self.cas = ContentAddressableStorage(storage_path)
         self.builder = CapsuleBuilder(self.cas)
-        self.installer = OfflineInstaller(self.cas)
+        # Share the same public key between builder and installer
+        self.installer = OfflineInstaller(self.cas, self.builder.public_key if CRYPTO_AVAILABLE else None)
     
     def create_capsule(self, manifest: AppManifest, build_result: BuildResult, 
                       platform: str = "universal") -> str:
@@ -387,7 +476,9 @@ class CapsuleManager:
     
     def verify_capsule(self, capsule_path: str) -> Tuple[bool, str, Optional[CapsuleMetadata]]:
         """Verify a capsule's integrity and authenticity"""
-        return self.builder.verify_capsule_integrity(capsule_path)
+        # Create a verifier with the builder's public key to verify capsules created by this manager
+        verifier = CapsuleVerifier(self.cas, self.builder.public_key if CRYPTO_AVAILABLE else None)
+        return verifier.verify_capsule_integrity(capsule_path)
     
     def install_capsule(self, capsule_path: str, install_path: str) -> Tuple[bool, str, Optional[AppManifest]]:
         """Install an application from a capsule"""

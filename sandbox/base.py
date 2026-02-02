@@ -8,6 +8,7 @@ import sys
 import subprocess
 import tempfile
 import shutil
+import shlex
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
@@ -205,12 +206,13 @@ class WindowsSandbox(BaseSandbox):
                 pass
             
             try:
+                # Parse the command safely to avoid shell injection
+                cmd_parts = shlex.split(command)
                 result = subprocess.run(
-                    command,
+                    cmd_parts,
                     timeout=timeout,
                     capture_output=True,
                     text=True,
-                    shell=True,  # Windows often needs shell for complex commands
                     cwd=cwd or workspace,
                     env=exec_env
                 )
@@ -264,12 +266,13 @@ class MacOSSandbox(BaseSandbox):
                 pass
             
             try:
+                # Parse the command safely to avoid shell injection
+                cmd_parts = shlex.split(command)
                 result = subprocess.run(
-                    command,
+                    cmd_parts,
                     timeout=timeout,
                     capture_output=True,
                     text=True,
-                    shell=True,
                     cwd=cwd or workspace,
                     env=exec_env
                 )
@@ -369,12 +372,11 @@ class ContainerSandbox(BaseSandbox):
                     metrics=metrics
                 )
             except subprocess.TimeoutExpired:
-                # Kill the container if it times out
-                try:
-                    subprocess.run(["docker", "kill", "$(docker ps -q)"], 
-                                 shell=True, capture_output=True)
-                except:
-                    pass  # Ignore errors when killing container
+                # Kill the specific timed-out container
+                # Note: In the current implementation, we don't have the specific container ID
+                # A better approach would be to track the container ID when starting the container
+                # For now, we'll avoid killing all containers as that's dangerous
+                pass  # Skip container cleanup on timeout to avoid killing other containers
                 
                 return SandboxResult(
                     success=False,

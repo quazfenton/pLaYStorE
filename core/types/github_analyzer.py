@@ -130,12 +130,12 @@ class GitHubRepoAnalyzer:
             signals = self._extract_signals(temp_dir, repo_info)
             
             # Classify the repository
-            classification = self._classify_repo(signals, temp_dir)
-            
+            classification = self._classify_repo(signals, temp_dir, repo_url)
+
             # Determine build strategy
             build_strategy = self._determine_build_strategy(signals, temp_dir)
             classification.build_strategy = build_strategy
-            
+
             return classification
         finally:
             # Clean up temporary directory
@@ -294,7 +294,7 @@ class GitHubRepoAnalyzer:
         
         return list(set(commands))  # Remove duplicates
     
-    def _classify_repo(self, signals: RepoSignals, repo_path: str) -> ClassificationResult:
+    def _classify_repo(self, signals: RepoSignals, repo_path: str, repo_url: str = "") -> ClassificationResult:
         """Classify repository based on extracted signals"""
         scores = {
             RepoArchetype.CLI_TOOL: 0,
@@ -359,8 +359,10 @@ class GitHubRepoAnalyzer:
             reasons.append("Library build file detected")
         
         # Check for demo/tutorial indicators
-        repo_name_lower = os.path.basename(repo_path).lower()
-        if any(indicator in repo_name_lower for indicator in ['demo', 'tutorial', 'example', 'sample']):
+        # Use the actual repo name from the URL instead of the temp directory name
+        repo_parts = repo_url.rstrip('/').split('/')[-2:]
+        actual_repo_name = repo_parts[-1].lower()
+        if any(indicator in actual_repo_name for indicator in ['demo', 'tutorial', 'example', 'sample']):
             scores[RepoArchetype.DEMO_PLAYGROUND] += 30
             reasons.append("Repository name suggests demo/example")
         
@@ -551,7 +553,7 @@ class GitHubAutoWrapper:
                 ),
                 run=Run(
                     type=runtime_type,
-                    entrypoint=self._determine_entrypoint(repo_path),  # Would need actual path
+                    entrypoint=self._determine_entrypoint(temp_dir),  # Use temp_dir instead of undefined repo_path
                     args=[]
                 ),
                 security=Security(

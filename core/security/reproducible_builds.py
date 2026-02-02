@@ -136,21 +136,22 @@ class ReproducibleBuilder:
     def _calculate_source_hash(self, source_path: str) -> str:
         """Calculate a hash of the source code"""
         hash_obj = hashlib.sha256()
-        
+
         for root, dirs, files in os.walk(source_path):
+            dirs.sort()  # Sort directories for consistent traversal order
             for file in sorted(files):  # Sort for consistency
                 filepath = os.path.join(root, file)
                 if os.path.isfile(filepath):
                     with open(filepath, 'rb') as f:
                         while chunk := f.read(8192):
                             hash_obj.update(chunk)
-        
+
         return hash_obj.hexdigest()
     
     def _create_build_recipe(self, manifest: AppManifest, source_path: str, source_hash: str) -> BuildRecipe:
         """Create a build recipe from manifest"""
         # Determine base image based on build strategy and language
-        base_image = self._determine_base_image(manifest)
+        base_image = self._determine_base_image(manifest, source_path)
         
         # Set up environment for reproducible builds
         environment = {
@@ -175,24 +176,25 @@ class ReproducibleBuilder:
             dependencies=dependencies
         )
     
-    def _determine_base_image(self, manifest: AppManifest) -> str:
+    def _determine_base_image(self, manifest: AppManifest, source_path: str = None) -> str:
         """Determine appropriate base image for build"""
         # This would be more sophisticated in practice
         if manifest.build.base_image:
             return manifest.build.base_image
-        
-        # Infer from source code
-        source_dir = "/tmp/inferred_source"  # Placeholder
-        if os.path.exists(os.path.join(source_dir, "requirements.txt")):
-            return "python:3.11@sha256:abc123"  # Would use actual hash
-        elif os.path.exists(os.path.join(source_dir, "package.json")):
-            return "node:18@sha256:def456"
-        elif os.path.exists(os.path.join(source_dir, "go.mod")):
-            return "golang:1.21@sha256:ghi789"
-        elif os.path.exists(os.path.join(source_dir, "Cargo.toml")):
-            return "rust:1.70@sha256:jkl012"
-        else:
-            return "ubuntu:22.04@sha256:mno345"
+
+        # Infer from source code if path is provided
+        if source_path and os.path.isdir(source_path):
+            if os.path.exists(os.path.join(source_path, "requirements.txt")):
+                return "python:3.11@sha256:abc123"  # Would use actual hash
+            elif os.path.exists(os.path.join(source_path, "package.json")):
+                return "node:18@sha256:def456"
+            elif os.path.exists(os.path.join(source_path, "go.mod")):
+                return "golang:1.21@sha256:ghi789"
+            elif os.path.exists(os.path.join(source_path, "Cargo.toml")):
+                return "rust:1.70@sha256:jkl012"
+
+        # Default fallback
+        return "ubuntu:22.04@sha256:mno345"
     
     def _resolve_dependencies(self, manifest: AppManifest) -> List[str]:
         """Resolve and lock dependencies for reproducible builds"""
@@ -239,18 +241,19 @@ class ReproducibleBuilder:
     def _calculate_output_hash(self, output_dir: str) -> str:
         """Calculate hash of build output"""
         hash_obj = hashlib.sha256()
-        
+
         for root, dirs, files in os.walk(output_dir):
+            dirs.sort()  # Sort directories for consistent traversal order
             for file in sorted(files):  # Sort for consistency
                 filepath = os.path.join(root, file)
                 if os.path.isfile(filepath):
                     # Include filename in hash for completeness
                     hash_obj.update(file.encode())
-                    
+
                     with open(filepath, 'rb') as f:
                         while chunk := f.read(8192):
                             hash_obj.update(chunk)
-        
+
         return hash_obj.hexdigest()
     
     def _compare_builds(self, result1: BuildResult, result2: BuildResult) -> ReproducibilityLevel:
@@ -339,16 +342,17 @@ class ReproducibilityVerifier:
     def verify_existing_builds(self, build_hashes: List[str]) -> bool:
         """
         Verify that existing builds are reproducible by rebuilding.
-        
+
         Args:
             build_hashes: List of expected build hashes
-            
+
         Returns:
             True if all builds are reproducible
         """
         # This would implement verification against known good hashes
-        # For now, return a placeholder
-        return len(build_hashes) > 0
+        # For now, return False to indicate unimplemented verification
+        # (Returning True without verification is a security risk)
+        return False  # Explicitly fail until real verification is implemented
 
 
 class ReproducibleBuildService:

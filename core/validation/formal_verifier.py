@@ -22,6 +22,9 @@ except ImportError:
     def And(*args): return True
     def Or(*args): return True
     def StringVal(val): return val
+    def Not(a): return not a  # Add missing Not function
+    def sat(): return "sat"  # Add missing sat constant
+    def unsat(): return "unsat"  # Add missing unsat constant
 
     Z3_AVAILABLE = False
 
@@ -128,90 +131,155 @@ class FormalManifestVerifier:
     def verify_permission_combinations(self, manifest: AppManifest) -> Tuple[bool, str]:
         """
         Verify that permission combinations are safe according to formal rules.
-        
+
         Args:
             manifest: The AppManifest to verify
-            
+
         Returns:
             Tuple of (is_safe, reason_or_error)
         """
+        if not Z3_AVAILABLE:
+            # Fallback to basic validation when Z3 is not available
+            return self._basic_verify_permission_combinations(manifest)
+
         s = Solver()
-        
+
         # Create variables for permissions
         network = Bool('network')
         gpu = Bool('gpu')
         fs_read = Bool('fs_read')
         fs_write = Bool('fs_write')
         repro_level = Int('repro_level')
-        
+
         # Set values based on manifest
         network_val = manifest.security.network != NetworkPolicy.NONE
         gpu_val = manifest.security.allow_gpu
         fs_read_val = manifest.security.filesystem != FilesystemPolicy.READONLY
         fs_write_val = manifest.security.filesystem == FilesystemPolicy.USER_HOME
         repro_val = int(manifest.trust.verification.replace('R', '')) if manifest.trust.verification.startswith('R') else 0
-        
+
         # Add constraints
         s.add(network == network_val)
         s.add(gpu == gpu_val)
         s.add(fs_read == fs_read_val)
         s.add(fs_write == fs_write_val)
         s.add(repro_level == repro_val)
-        
+
         # Safety rules
         # Rule 1: If GPU access is allowed, network access must be limited or reproducible
         s.add(Implies(gpu, Or(network == False, repro_level >= 2)))
-        
+
         # Rule 2: Full filesystem write + network access requires high reproducibility
         s.add(Implies(And(fs_write, network), repro_level >= 3))
-        
+
         # Rule 3: If not reproducible (R0), only allow minimal permissions
         s.add(Implies(repro_level == 0, And(Not(network), Not(gpu), fs_read == False)))
-        
+
         result = s.check()
-        
+
         if result == sat:
             return True, "Permission combinations are safe"
         else:
             return False, "Permission combinations violate safety rules"
+
+    def _basic_verify_permission_combinations(self, manifest: AppManifest) -> Tuple[bool, str]:
+        """
+        Basic permission combination validation when Z3 is not available.
+
+        Args:
+            manifest: The AppManifest to verify
+
+        Returns:
+            Tuple of (is_safe, reason_or_error)
+        """
+        # Basic checks for permission combinations
+        network_allowed = manifest.security.network != NetworkPolicy.NONE
+        gpu_allowed = manifest.security.allow_gpu
+        fs_write_allowed = manifest.security.filesystem == FilesystemPolicy.USER_HOME
+        repro_val = int(manifest.trust.verification.replace('R', '')) if manifest.trust.verification.startswith('R') else 0
+
+        # Rule 1: If GPU access is allowed, network access must be limited or reproducible
+        if gpu_allowed and network_allowed and repro_val < 2:
+            return False, "GPU access with network requires reproducibility level R2 or higher"
+
+        # Rule 2: Full filesystem write + network access requires high reproducibility
+        if fs_write_allowed and network_allowed and repro_val < 3:
+            return False, "Full filesystem write with network access requires reproducibility level R3 or higher"
+
+        # Rule 3: If not reproducible (R0), only allow minimal permissions
+        if repro_val == 0 and (network_allowed or gpu_allowed or fs_write_allowed):
+            return False, "Non-reproducible apps (R0) cannot have network, GPU, or write access"
+
+        return True, "Permission combinations are safe"
     
     def verify_dependency_chain(self, manifest: AppManifest, dependencies: Dict[str, 'AppManifest']) -> Tuple[bool, str]:
         """
         Verify that all dependencies meet minimum reproducibility requirements.
-        
+
         Args:
             manifest: The main AppManifest
             dependencies: Dictionary of dependency manifests
-            
+
         Returns:
             Tuple of (is_valid, reason_or_error)
         """
+        if not Z3_AVAILABLE:
+            # Fallback to basic validation when Z3 is not available
+            return self._basic_verify_dependency_chain(manifest, dependencies)
+
         s = Solver()
-        
+
         # Check if all dependencies have sufficient reproducibility
         for dep_id, dep_manifest in dependencies.items():
             dep_repro_level = Int(f'dep_{dep_id}_repro')
             req_repro_level = Int(f'dep_{dep_id}_req_repro')
-            
+
             # Get actual reproducibility level
             actual_level = int(dep_manifest.trust.verification.replace('R', '')) if dep_manifest.trust.verification.startswith('R') else 0
             s.add(dep_repro_level == actual_level)
-            
+
             # Minimum requirement based on main app's needs
             if manifest.security.allow_gpu or manifest.security.network != NetworkPolicy.NONE:
                 min_req = 2  # R2 minimum for network/GPU apps
             else:
                 min_req = 1  # R1 minimum for others
-                
+
             s.add(req_repro_level == min_req)
             s.add(dep_repro_level >= req_repro_level)
-        
+
         result = s.check()
-        
+
         if result == sat:
             return True, "All dependencies meet reproducibility requirements"
         else:
             return False, "Some dependencies do not meet reproducibility requirements"
+
+    def _basic_verify_dependency_chain(self, manifest: AppManifest, dependencies: Dict[str, 'AppManifest']) -> Tuple[bool, str]:
+        """
+        Basic dependency chain validation when Z3 is not available.
+
+        Args:
+            manifest: The main AppManifest
+            dependencies: Dictionary of dependency manifests
+
+        Returns:
+            Tuple of (is_valid, reason_or_error)
+        """
+        # Basic checks for dependencies
+        for dep_id, dep_manifest in dependencies.items():
+            # Get reproducibility level
+            actual_level = int(dep_manifest.trust.verification.replace('R', '')) if dep_manifest.trust.verification.startswith('R') else 0
+
+            # Minimum requirement based on main app's needs
+            if manifest.security.allow_gpu or manifest.security.network != NetworkPolicy.NONE:
+                min_req = 2  # R2 minimum for network/GPU apps
+            else:
+                min_req = 1  # R1 minimum for others
+
+            if actual_level < min_req:
+                return False, f"Dependency {dep_id} does not meet reproducibility requirements (needs R{min_req}, has R{actual_level})"
+
+        return True, "All dependencies meet reproducibility requirements"
     
     def generate_verification_proof(self, manifest: AppManifest) -> Dict:
         """

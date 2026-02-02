@@ -395,7 +395,7 @@ const {{ WASI }} = require('wasi');
 const path = require('path');
 
 const wasi = new WASI({{
-    args: [...['{json.dumps(wasm_file)}'], ...{json.dumps(args)}],
+    args: [{json.dumps(wasm_file)}, ...{json.dumps(args)}],
     env: {{}},
     preopens: {{
         '/sandbox': '.'

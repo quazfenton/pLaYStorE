@@ -450,8 +450,9 @@ class AppStoreUI:
                 self.root.after(0, update_ui)
                     
             except Exception as e:
+                err = f"Failed to install {app.name}: {e!s}"
                 self.root.after(0, lambda: self.status_var.set("Installation failed"))
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to install {app.name}: {e!s}"))
+                self.root.after(0, lambda: messagebox.showerror("Error", err))
         
 =======
 

@@ -3,7 +3,7 @@ Formal manifest verification engine using SMT/Z3 for the alternative app store p
 Based on the scouts.md specification for formal verification of manifests.
 """
 from typing import Dict, Tuple, Optional
-from ..core.types.manifest_schema import AppManifest, RuntimeType, NetworkPolicy, FilesystemPolicy
+from ..types.manifest_schema import AppManifest, RuntimeType, NetworkPolicy, FilesystemPolicy
 
 try:
     from z3 import *

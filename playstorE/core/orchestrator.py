@@ -58,23 +58,23 @@ class PlatformOrchestrator:
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize subsystems
-        from altstore.client.github_explorer import GitHubExplorer
-        from altstore.executor.offline_orchestrator import (
+        from playstorE.client.github_explorer import GitHubExplorer
+        from playstorE.executor.offline_orchestrator import (
             OfflineCapsuleBuilder, OfflineInstallationManager, TrustSnapshotManager
         )
-        from altstore.executor.wasm import WASMFallbackManager
-        from altstore.core.validation.formal_verifier import FormalVerifier
-        from altstore.core.security.trust_model import SecurityManager
-        from altstore.core.security.reproducible_builds import ReproducibilityEngine
+        from playstorE.executor.wasm import WASMFallbackManager
+        from playstorE.core.validation.formal_verifier import FormalManifestVerifier
+        from playstorE.core.security.trust_model import SecurityManager
+        from playstorE.core.security.reproducible_builds import ReproducibleBuildService
         
         self.github_explorer = GitHubExplorer(github_token)
         self.capsule_builder = OfflineCapsuleBuilder(str(self.storage_path / "capsules"))
         self.installer = OfflineInstallationManager(str(self.storage_path / "installations"))
         self.trust_manager = TrustSnapshotManager(str(self.storage_path / "trust"))
         self.wasm_manager = WASMFallbackManager()
-        self.formal_verifier = FormalVerifier()
+        self.formal_verifier = FormalManifestVerifier()
         self.security_manager = SecurityManager()
-        self.reproducibility_engine = ReproducibilityEngine()
+        self.reproducibility_engine = ReproducibleBuildService()
         
         # Workflow state
         self.current_workflow = None

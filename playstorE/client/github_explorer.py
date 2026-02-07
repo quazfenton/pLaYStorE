@@ -307,7 +307,7 @@ class GitHubExplorer:
         # Score each category
         scores = {
             RepoType.CLI_TOOL: (has_cli_indicators or has_setup_py or has_cargo_toml or has_go_mod or has_makefile) * 2,
-            RepoType.SERVER_APP: (has_server_indicators or has_docker_indicators) * 2,
+            RepoType.SERVER_APP: (has_server_indicators or has_dockerfile) * 2,
             RepoType.LIBRARY: (has_setup_py or has_cargo_toml or has_package_json) * 1.5,
             RepoType.WEB_APP: has_web_indicators * 2 or has_package_json * 1,
             RepoType.DESKTOP_APP: has_desktop_indicators * 2,

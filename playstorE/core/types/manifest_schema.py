@@ -245,7 +245,7 @@ class ManifestValidator:
                         "type": "array",
                         "items": {"type": "string", "format": "hostname"}
                     },
-                    "contact": {"type": "string", "format": "email"}
+                    "contact": {"type": ["string", "null"], "format": "email"}
                 }
             },
             "source": {
@@ -256,9 +256,9 @@ class ManifestValidator:
                         "type": "string",
                         "enum": ["github_repo", "github_release", "official_url"]
                     },
-                    "repo": {"type": "string"},
-                    "url": {"type": "string", "format": "uri"},
-                    "asset_regex": {"type": "string"}
+                    "repo": {"type": ["string", "null"]},
+                    "url": {"type": ["string", "null"], "format": "uri"},
+                    "asset_regex": {"type": ["string", "null"]}
                 }
             },
             "versions": {
@@ -282,11 +282,11 @@ class ManifestValidator:
                         "enum": ["docker", "native", "script", "none"]
                     },
                     "commands": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {"type": "string"}
                     },
-                    "base_image": {"type": "string"},
-                    "environment": {"type": "object"}
+                    "base_image": {"type": ["string", "null"]},
+                    "environment": {"type": ["object", "null"]}
                 }
             },
             "run": {
@@ -299,18 +299,18 @@ class ManifestValidator:
                     },
                     "entrypoint": {"type": "string"},
                     "args": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {"type": "string"}
                     },
                     "ports": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 65535
                         }
                     },
-                    "expose": {"type": "object"}
+                    "expose": {"type": ["object", "null"]}
                 }
             },
             "security": {
@@ -340,7 +340,7 @@ class ManifestValidator:
                         "type": "string",
                         "enum": ["signed", "reproducible", "none"]
                     },
-                    "checksums": {"type": "object"}
+                    "checksums": {"type": ["object", "null"]}
                 }
             },
             "resources": {

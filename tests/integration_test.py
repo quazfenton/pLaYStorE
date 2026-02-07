@@ -26,7 +26,7 @@ class TestGitHubDiscovery:
     @pytest.mark.asyncio
     async def test_github_explorer_initialization(self):
         """Test GitHubExplorer can be initialized"""
-        from altstore.client.github_explorer import GitHubExplorer
+        from playstorE.client.github_explorer import GitHubExplorer
         
         explorer = GitHubExplorer()
         assert explorer is not None
@@ -35,7 +35,7 @@ class TestGitHubDiscovery:
     @pytest.mark.asyncio
     async def test_repo_classification(self):
         """Test repository type classification"""
-        from altstore.client.github_explorer import GitHubExplorer, RepoType
+        from playstorE.client.github_explorer import GitHubExplorer, RepoType
         
         explorer = GitHubExplorer()
         
@@ -48,7 +48,7 @@ class TestGitHubDiscovery:
     
     def test_port_detection(self):
         """Test port extraction from README"""
-        from altstore.client.github_explorer import GitHubExplorer
+        from playstorE.client.github_explorer import GitHubExplorer
         
         explorer = GitHubExplorer()
         
@@ -72,11 +72,11 @@ class TestManifestValidation:
     
     def test_manifest_creation_and_validation(self):
         """Test creating and validating a manifest"""
-        from altstore.core.types.manifest_schema import (
+        from playstorE.core.types.manifest_schema import (
             AppManifest, Publisher, Source, Versions, Build, Run,
-            Security, Trust, ManifestValidator, NetworkPolicy, FilesystemPolicy
+            Security, Trust, ManifestValidator, NetworkPolicy, FilesystemPolicy, RuntimeType
         )
-        
+
         manifest = AppManifest(
             api_version="appstore.dev/v1",
             kind="Application",
@@ -96,7 +96,7 @@ class TestManifestValidation:
             versions=Versions(strategy="semver"),
             build=Build(strategy="docker"),
             run=Run(
-                type="cli",
+                type=RuntimeType.CLI,
                 entrypoint="app"
             ),
             security=Security(
@@ -112,7 +112,7 @@ class TestManifestValidation:
     
     def test_manifest_invalid_version(self):
         """Test manifest validation with invalid API version"""
-        from altstore.core.types.manifest_schema import ManifestValidator
+        from playstorE.core.types.manifest_schema import ManifestValidator
         
         invalid_manifest = {
             "apiVersion": "invalid/v1",  # Invalid format
@@ -136,31 +136,39 @@ class TestSecurityAssessment:
     
     def test_trust_score_calculation(self):
         """Test trust score computation"""
-        from altstore.core.security.trust_model import SecurityManager
-        
+        from playstorE.core.security.trust_model import SecurityManager
+        from playstorE.core.types.manifest_schema import (
+            AppManifest, Publisher, Source, Versions, Build, Run,
+            Security, Trust, RuntimeType, NetworkPolicy, FilesystemPolicy
+        )
+
         manager = SecurityManager()
-        
+
         # Create mock manifest
-        manifest = {
-            "apiVersion": "appstore.dev/v1",
-            "kind": "Application",
-            "metadata": {"app_id": "test.app", "name": "Test"},
-            "publisher": {"name": "Test", "verified_domains": ["test.com"]},
-            "source": {"type": "github_repo"},
-            "versions": {"strategy": "semver"},
-            "build": {"strategy": "docker"},
-            "run": {"type": "cli", "entrypoint": "app"},
-            "security": {"sandbox": "strict", "network": "none", "filesystem": "readonly"},
-            "trust": {"verification": "none"}
-        }
-        
+        manifest = AppManifest(
+            api_version="appstore.dev/v1",
+            kind="Application",
+            metadata={"app_id": "test.app", "name": "Test"},
+            publisher=Publisher(name="Test", verified_domains=["test.com"]),
+            source=Source(type="github_repo", repo="test/app"),
+            versions=Versions(strategy="semver"),
+            build=Build(strategy="docker"),
+            run=Run(type=RuntimeType.CLI, entrypoint="app"),
+            security=Security(
+                sandbox="strict",
+                network=NetworkPolicy.NONE,
+                filesystem=FilesystemPolicy.READONLY
+            ),
+            trust=Trust(verification="none")
+        )
+
         assessment = manager.assess_application(
             manifest,
             reproducibility_level="R2",  # High
             malware_result="safe",
             community_score=0.8
         )
-        
+
         assert "trust_score" in assessment
         assert assessment["trust_score"] >= 0.0
         assert assessment["trust_score"] <= 1.0
@@ -171,8 +179,8 @@ class TestWASMFallback:
     
     def test_wasm_compatibility_scoring(self):
         """Test WASM compatibility calculation"""
-        from altstore.executor.wasm import WASMCompatibilityChecker
-        from altstore.core.types.manifest_schema import (
+        from playstorE.executor.wasm import WASMCompatibilityChecker
+        from playstorE.core.types.manifest_schema import (
             AppManifest, Publisher, Source, Versions, Build, Run,
             Security, Trust, NetworkPolicy, FilesystemPolicy
         )
@@ -205,8 +213,8 @@ class TestWASMFallback:
     
     def test_wasm_fallback_manager(self):
         """Test WASM fallback decision logic"""
-        from altstore.executor.wasm import WASMFallbackManager
-        from altstore.core.types.manifest_schema import (
+        from playstorE.executor.wasm import WASMFallbackManager
+        from playstorE.core.types.manifest_schema import (
             AppManifest, Publisher, Source, Versions, Build, Run,
             Security, Trust, NetworkPolicy, FilesystemPolicy
         )
@@ -240,7 +248,7 @@ class TestOfflineCapsules:
     
     def test_capsule_creation(self):
         """Test building an offline capsule"""
-        from altstore.executor.offline_orchestrator import OfflineCapsuleBuilder
+        from playstorE.executor.offline_orchestrator import OfflineCapsuleBuilder
         
         with tempfile.TemporaryDirectory() as tmpdir:
             builder = OfflineCapsuleBuilder(tmpdir)
@@ -273,7 +281,7 @@ class TestOfflineCapsules:
     
     def test_offline_installation(self):
         """Test installing from offline capsule"""
-        from altstore.executor.offline_orchestrator import (
+        from playstorE.executor.offline_orchestrator import (
             OfflineCapsuleBuilder, OfflineInstallationManager
         )
         
@@ -317,7 +325,7 @@ class TestFrontendUI:
     
     def test_app_card_rendering(self):
         """Test app card HTML generation"""
-        from altstore.client.frontend import AppCard, TrustLevel
+        from playstorE.client.frontend import AppCard, TrustLevel
         
         card = AppCard(
             app_id="test.app",
@@ -339,7 +347,7 @@ class TestFrontendUI:
     
     def test_catalog_html_generation(self):
         """Test app catalog rendering"""
-        from altstore.client.frontend import AppCatalog, AppCard, TrustLevel
+        from playstorE.client.frontend import AppCatalog, AppCard, TrustLevel
         
         catalog = AppCatalog()
         
@@ -369,7 +377,7 @@ class TestFrontendUI:
     
     def test_main_ui_generation(self):
         """Test main UI HTML generation"""
-        from altstore.client.frontend import MainUI
+        from playstorE.client.frontend import MainUI
         
         ui = MainUI()
         html = ui.to_html()
@@ -386,7 +394,7 @@ class TestCentralOrchestrator:
     @pytest.mark.asyncio
     async def test_orchestrator_initialization(self):
         """Test orchestrator can be initialized"""
-        from altstore.core.orchestrator import PlatformOrchestrator
+        from playstorE.core.orchestrator import PlatformOrchestrator
         
         with tempfile.TemporaryDirectory() as tmpdir:
             orchestrator = PlatformOrchestrator(tmpdir)
@@ -403,11 +411,11 @@ class TestEndToEndIntegration:
     
     def test_manifest_to_capsule_pipeline(self):
         """Test complete pipeline from manifest to offline capsule"""
-        from altstore.core.types.manifest_schema import (
+        from playstorE.core.types.manifest_schema import (
             AppManifest, Publisher, Source, Versions, Build, Run,
-            Security, Trust, ManifestValidator, NetworkPolicy, FilesystemPolicy
+            Security, Trust, ManifestValidator, NetworkPolicy, FilesystemPolicy, RuntimeType
         )
-        from altstore.executor.offline_orchestrator import OfflineCapsuleBuilder
+        from playstorE.executor.offline_orchestrator import OfflineCapsuleBuilder
         
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create manifest
@@ -426,7 +434,7 @@ class TestEndToEndIntegration:
                 source=Source(type="github_repo", repo="test/test"),
                 versions=Versions(strategy="semver"),
                 build=Build(strategy="docker"),
-                run=Run(type="cli", entrypoint="test"),
+                run=Run(type=RuntimeType.CLI, entrypoint="test"),
                 security=Security(
                     sandbox="strict",
                     network=NetworkPolicy.NONE,
@@ -459,7 +467,7 @@ class TestPerformance:
     def test_manifest_validation_performance(self):
         """Test manifest validation performance"""
         import time
-        from altstore.core.types.manifest_schema import ManifestValidator
+        from playstorE.core.types.manifest_schema import ManifestValidator
         
         manifest = {
             "apiVersion": "appstore.dev/v1",

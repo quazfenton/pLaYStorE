@@ -20,7 +20,10 @@ try:
     print("✓ installed_app_ids attribute exists")
     
     # Check that _previous_view is handled properly in back_to_previous_view
-    assert hasattr(ui_instance, '_previous_view') or True, "_previous_view is handled dynamically"
+    # Verify _previous_view handling exists in the source
+    import inspect
+    source = inspect.getsource(AppStoreUI)
+    assert '_previous_view' in source, "_previous_view not found in AppStoreUI"
     print("✓ Previous view tracking mechanism is in place")
     
     print("\n✓ All fixes have been applied successfully!")

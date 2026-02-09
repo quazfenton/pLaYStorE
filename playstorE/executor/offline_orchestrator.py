@@ -428,12 +428,12 @@ class OfflineInstallationManager:
 WASM_FILE="app.wasm"
 WASM_ENGINE="${WASM_ENGINE:-wasmtime}"
 
-if ! command -v $WASM_ENGINE &> /dev/null; then
+if ! command -v "$WASM_ENGINE" &> /dev/null; then
     echo "Error: $WASM_ENGINE not found. Install wasmtime, wasmer, or node.js"
     exit 1
 fi
 
-exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
+exec "$WASM_ENGINE" --dir=. "$WASM_FILE" "$@"
 """)
         wasm_run_script.chmod(0o755)
     

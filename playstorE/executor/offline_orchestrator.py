@@ -483,46 +483,22 @@ exec "$WASM_ENGINE" --dir=. "$WASM_FILE" "$@"
             stdout = ""
             stderr = str(e)
             exit_code = 1
-        diff
-        --- a/playstorE/executor/offline_orchestrator.py
-        +++ b/playstorE/executor/offline_orchestrator.py
-        @@ -469,14 +469,14 @@
-                     fallback_reason = FallbackReason(install_metadata["fallback_reason"])
-         
-                 # Execute based on mode
-        -        start_time = datetime.now()
-        +        start_time = datetime.utcnow()
-         
-                 try:
-                     if execution_mode == ExecutionMode.NATIVE:
-                         result = self._run_native(app_install_dir, args or [])
-                     elif execution_mode == ExecutionMode.WASM:
-                         result = self._run_wasm(app_install_dir, args or [])
-        -            else:
-        +            else: # Lines 482-485 are unchanged context
-                         raise RuntimeError(f"Cannot auto-execute in {execution_mode} mode. Manual execution required.")
-             
-                     stdout, stderr, exit_code = result
-        @@ -485,7 +485,7 @@
-                     stdout = ""
-                     stderr = str(e)
-                     exit_code = 1
-        -        
-        -        duration = (datetime.now() - start_time).total_seconds()
-        -        
-        +        # Lines 486-494 are the target range for the original request
-        +        duration = (datetime.utcnow() - start_time).total_seconds()
-        +
-                 trace = ExecutionTrace(
-                     app_id=app_id,
-                     version=version,
-                     mode=execution_mode,
-                     fallback_reason=fallback_reason,
-                     started_at=start_time.isoformat() + "Z",
-        -
-            completed_at=datetime.now().isoformat() + "Z",
+        duration = (datetime.utcnow() - start_time).total_seconds()
+
+        trace = ExecutionTrace(
+            app_id=app_id,
+            version=version,
+            mode=execution_mode,
+            fallback_reason=fallback_reason,
+            started_at=start_time.isoformat() + "Z",
+            completed_at=datetime.utcnow().isoformat() + "Z",
             exit_code=exit_code,
             stdout=stdout,
+            stderr=stderr,
+            duration_seconds=duration,
+        )
+        self.execution_traces.append(trace)
+        return trace
             stderr=stderr,
             duration_seconds=duration
         )

@@ -583,8 +583,11 @@ class TrustSnapshotManager:
         """Check if an app is revoked (offline)"""
         snapshot = self.get_latest_snapshot()
         if not snapshot:
-            return False
-        
+            # Fail-closed: no trust data means we can't verify
+            import warnings
+            warnings.warn("No trust snapshot available — treating app as potentially revoked")
+            return True
+
         return app_id in snapshot.revoked_apps
     
     def get_risk_score(self, app_id: str) -> Optional[float]:

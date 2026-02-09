@@ -232,7 +232,8 @@ class OfflineCapsuleBuilder:
         import tarfile
         
         with tarfile.open(output_path, "w:gz") as tar:
-            tar.add(capsule_dir, arcname=capsule_dir.name)
+            for item in capsule_dir.iterdir():
+                tar.add(item, arcname=item.name)
 
 
 class OfflineInstallationManager:

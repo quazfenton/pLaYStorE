@@ -11,9 +11,15 @@ from dataclasses import dataclass
 from enum import Enum
 import threading
 import time
-from ..core.types.manifest_schema import AppManifest
-from ..storage.indexes.federated import FederatedIndexManager
-from ..core.security.trust_model import SecurityManager
+try:
+    from core.types.manifest_schema import AppManifest
+    from storage.indexes.federated import FederatedIndexManager
+    from core.security.trust_model import SecurityManager
+except ImportError:
+    # Fallback for relative imports when running as module
+    from ..core.types.manifest_schema import AppManifest
+    from ..storage.indexes.federated import FederatedIndexManager
+    from ..core.security.trust_model import SecurityManager
 
 
 class ViewMode(Enum):
@@ -41,22 +47,25 @@ class UIAppInfo:
 
 class AppStoreUI:
     """Main UI for the alternative app store"""
-    
-    def __init__(self, index_manager: FederatedIndexManager, 
+
+    def __init__(self, index_manager: FederatedIndexManager,
                  security_manager: SecurityManager):
         self.index_manager = index_manager
         self.security_manager = security_manager
         self.root = tk.Tk()
         self.root.title("Alternative App Store")
         self.root.geometry("1000x700")
-        
+
         # Current view mode
         self.current_view = ViewMode.CATALOG
         self.selected_app: Optional[UIAppInfo] = None
-        
+
+        # Track installed app IDs to persist install state
+        self.installed_app_ids = set()
+
         # Search term
         self.search_term = tk.StringVar()
-        
+
         self.setup_ui()
         self.refresh_catalog()
     
@@ -379,11 +388,14 @@ class AppStoreUI:
         # In a real implementation, this would come from the federated index
         # For now, we'll create some mock apps
         apps = []
-        
+
         # Get apps from index manager
         index_apps = self.index_manager.get_all_apps()
-        
+
         for idx_app in index_apps:
+            # Check if app is installed based on our persistent tracking
+            is_installed = idx_app.app_id in self.installed_app_ids
+
             # Convert to UIAppInfo
             app_info = UIAppInfo(
                 app_id=idx_app.app_id,
@@ -393,22 +405,22 @@ class AppStoreUI:
                 version=idx_app.version,
                 trust_score=idx_app.trust_score,
                 download_size="10 MB",  # Placeholder
-                is_installed=False  # Placeholder
+                is_installed=is_installed
             )
             apps.append(app_info)
-        
+
         # Add some mock apps if index is empty
         if not apps:
             mock_apps = [
-                UIAppInfo("com.example.app1", "Example App 1", "A great example application", 
+                UIAppInfo("com.example.app1", "Example App 1", "A great example application",
                          "Example Publisher", "1.0.0", 0.92, "15 MB", is_installed=False),
-                UIAppInfo("com.example.app2", "Another App", "Another useful application", 
+                UIAppInfo("com.example.app2", "Another App", "Another useful application",
                          "Another Publisher", "2.1.0", 0.87, "22 MB", is_installed=True),
-                UIAppInfo("org.test.utility", "Test Utility", "A handy utility tool", 
+                UIAppInfo("org.test.utility", "Test Utility", "A handy utility tool",
                          "Test Developer", "1.5.3", 0.78, "8 MB", is_installed=False),
             ]
             apps.extend(mock_apps)
-        
+
         return apps
     
     def get_trust_color(self, trust_score: float) -> str:
@@ -437,24 +449,9 @@ class AppStoreUI:
                 # Update app as installed
                 app.is_installed = True
                 app.install_path = f"/opt/apps/{app.app_id}"
-<<<<<<< Updated upstream
-                
-                def update_ui():
-                    self.status_var.set(f"Successfully installed {app.name}")
-                    messagebox.showinfo("Success", f"{app.name} installed successfully!")
-                    if self.current_view == ViewMode.CATALOG:
-                        self.show_catalog()
-                    elif self.current_view == ViewMode.SEARCH:
-                        self.display_search_results()
-                
-                self.root.after(0, update_ui)
-                    
-            except Exception as e:
-                err = f"Failed to install {app.name}: {e!s}"
-                self.root.after(0, lambda: self.status_var.set("Installation failed"))
-                self.root.after(0, lambda: messagebox.showerror("Error", err))
-        
-=======
+
+                # Add to installed apps set to persist state
+                self.installed_app_ids.add(app.app_id)
 
                 # Schedule all UI updates on main thread
                 self.root.after(0, lambda: self.status_var.set(f"Successfully installed {app.name}"))
@@ -471,8 +468,6 @@ class AppStoreUI:
                 self.root.after(0, lambda: self.status_var.set("Installation failed"))
                 # Show error dialog on main thread
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to install {app.name}: {str(e)}"))
-
->>>>>>> Stashed changes
         threading.Thread(target=do_install, daemon=True).start()
     
     def uninstall_app(self, app: UIAppInfo):
@@ -495,10 +490,14 @@ class AppStoreUI:
                 # Update app as uninstalled
                 app.is_installed = False
                 app.install_path = None
-                
-                self.status_var.set(f"Successfully uninstalled {app.name}")
-                messagebox.showinfo("Success", f"{app.name} uninstalled successfully!")
-                
+
+                # Remove from installed apps set to persist state
+                self.installed_app_ids.discard(app.app_id)
+
+                # Schedule all UI updates on main thread
+                self.root.after(0, lambda: self.status_var.set(f"Successfully uninstalled {app.name}"))
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"{app.name} uninstalled successfully!"))
+
                 # Schedule UI updates on main thread
                 if self.current_view == ViewMode.INSTALLED:
                     self.root.after(0, self.show_installed)
@@ -515,6 +514,8 @@ class AppStoreUI:
     
     def show_app_details(self, app: UIAppInfo):
         """Show detailed information about an app"""
+        # Save the current view as the previous view before navigating to details
+        self._previous_view = self.current_view
         self.selected_app = app
         self.current_view = ViewMode.DETAILS
         self.clear_content_area()

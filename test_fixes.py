@@ -4,8 +4,11 @@
 import os
 
 def test_fixes():
-    file_path = "/home/workspace/code/playstore/client/ui.py"
-    
+    file_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "playstorE", "client", "ui.py"
+    )
+
     with open(file_path, 'r') as f:
         content = f.read()
     

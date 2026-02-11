@@ -32,17 +32,17 @@ python -m pytest tests/integration_test.py -v
 ### 1. Search GitHub for Apps
 
 ```python
-from altstore.client.github_explorer import GitHubExplorer
+from playstorE.client.github_explorer import GitHubExplorer
 import asyncio
 
 async def discover():
     explorer = GitHubExplorer()
-    
+
     # Search for ripgrep
     repos = await explorer.search_repos("ripgrep")
     for repo in repos:
         print(f"{repo.full_name}: {repo.stars} ⭐")
-        
+
     # Analyze ripgrep
     analysis = await explorer.analyze_repo("BurntSushi/ripgrep")
     print(f"\nType: {analysis.repo_type.value}")
@@ -55,20 +55,20 @@ asyncio.run(discover())
 ### 2. Validate Manifest
 
 ```python
-from altstore.core.types.manifest_schema import (
-    AppManifest, Publisher, Source, Versions, Build, Run,
+from playstorE.core.types.manifest_schema import (
+    AppManifest, Publisher, Source, Versions, Build, Run, RuntimeType,
     Security, Trust, ManifestValidator, NetworkPolicy, FilesystemPolicy
 )
 
 manifest = AppManifest(
     api_version="appstore.dev/v1",
     kind="Application",
-    metadata={"app_id": "com.example.app", "name": "My App"},
+    metadata={"app_id": "com.example.app", "name": "My App", "description": "Example application"},
     publisher=Publisher(name="Example", verified_domains=[]),
     source=Source(type="github_repo", repo="example/app"),
     versions=Versions(strategy="semver"),
     build=Build(strategy="docker"),
-    run=Run(type="cli", entrypoint="app"),
+    run=Run(type=RuntimeType.CLI, entrypoint="app"),
     security=Security(
         sandbox="strict",
         network=NetworkPolicy.NONE,
@@ -85,18 +85,18 @@ print(f"Manifest valid: {is_valid}")
 ### 3. One-Click Install (Complete Workflow)
 
 ```python
-from altstore.core.orchestrator import PlatformOrchestrator
+from playstorE.core.orchestrator import PlatformOrchestrator
 import asyncio
 
 async def install():
     orchestrator = PlatformOrchestrator("./storage")
-    
+
     # Complete workflow: GitHub → Installed App
     result = await orchestrator.discover_and_install(
         "BurntSushi/ripgrep",
         user_preferences={"allow_wasm": True}
     )
-    
+
     if result["success"]:
         print("✅ Installation successful!")
         print(f"Install path: {result['install_result']['install_path']}")
@@ -111,7 +111,7 @@ asyncio.run(install())
 ### 4. Offline Installation (Air-Gapped)
 
 ```python
-from altstore.executor.offline_orchestrator import (
+from playstorE.executor.offline_orchestrator import (
     OfflineCapsuleBuilder, OfflineInstallationManager
 )
 
@@ -141,7 +141,7 @@ print(f"Output: {trace.stdout}")
 ### 5. Generate UI
 
 ```python
-from altstore.client.frontend import MainUI, AppCard, TrustLevel
+from playstorE.client.frontend import MainUI, AppCard, TrustLevel
 
 ui = MainUI()
 

@@ -17,6 +17,8 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 from dataclasses import dataclass
 import json
+import html
+from ..core.security.trust_model import TrustLevel as CoreTrustLevel
 
 
 class TrustLevel(Enum):
@@ -25,6 +27,20 @@ class TrustLevel(Enum):
     REPRODUCIBLE = "reproducible"  # 🟡 Amber circle - open source, reproducible
     UNVERIFIED = "unverified"   # 🔴 Red circle - unverified, sandboxed only
     UNKNOWN = "unknown"         # ⚪ Gray circle - trust data not available
+
+
+def map_trust_for_frontend(trust: CoreTrustLevel) -> TrustLevel:
+    """Map core trust level to frontend trust level, handling missing UNKNOWN value"""
+    if trust == CoreTrustLevel.VERIFIED:
+        return TrustLevel.VERIFIED
+    elif trust == CoreTrustLevel.REPRODUCIBLE:
+        return TrustLevel.REPRODUCIBLE
+    elif trust == CoreTrustLevel.COMMUNITY:
+        return TrustLevel.UNKNOWN  # Map COMMUNITY to UNKNOWN for frontend display
+    elif trust == CoreTrustLevel.UNVERIFIED:
+        return TrustLevel.UNVERIFIED
+    else:
+        return TrustLevel.UNKNOWN
 
 
 class InstallationState(Enum):
@@ -104,21 +120,35 @@ class AppCard:
             TrustLevel.UNVERIFIED: "🔴",
             TrustLevel.UNKNOWN: "⚪"
         }
-        
+
         trust_colors = {
             TrustLevel.VERIFIED: "#16a34a",
             TrustLevel.REPRODUCIBLE: "#ea580c",
             TrustLevel.UNVERIFIED: "#dc2626",
             TrustLevel.UNKNOWN: "#6b7280"
         }
+
+        # Escape all user-provided data to prevent XSS
+        safe_app_id = html.escape(self.app_id, quote=True)
+        safe_name = html.escape(self.name, quote=True)
+        safe_publisher = html.escape(self.publisher, quote=True)
+        safe_description = html.escape(self.description, quote=True)
+        safe_tags = [html.escape(tag, quote=True) for tag in self.tags]
         
-        html = f"""
-<div class="app-card" data-app-id="{self.app_id}">
+        # Sanitize icon URL to prevent javascript: or data: URIs
+        safe_icon_url = self.icon_url
+        if self.icon_url and (self.icon_url.startswith(('http://', 'https://', '//'))):
+            safe_icon_url = html.escape(self.icon_url, quote=True)
+        else:
+            safe_icon_url = None  # Don't render unsafe URLs
+
+        html_str = f"""
+<div class="app-card" data-app-id="{safe_app_id}">
     <div class="app-card-header">
-        {'<img src="' + self.icon_url + '" class="app-icon" />' if self.icon_url else '<div class="app-icon-placeholder">📦</div>'}
+        {'<img src="' + safe_icon_url + '" class="app-icon" />' if safe_icon_url else '<div class="app-icon-placeholder">📦</div>'}
         <div class="app-info">
-            <h3 class="app-name">{self.name}</h3>
-            <p class="app-publisher">by {self.publisher}</p>
+            <h3 class="app-name">{safe_name}</h3>
+            <p class="app-publisher">by {safe_publisher}</p>
             <div class="app-meta">
                 <span class="trust-indicator" style="color: {trust_colors[self.trust_level]}">
                     {trust_icons[self.trust_level]} {self.trust_level.value.capitalize()}
@@ -128,22 +158,22 @@ class AppCard:
             </div>
         </div>
     </div>
-    
-    <p class="app-description">{self.description}</p>
-    
-    {'<div class="app-tags">' + ''.join(f'<span class="tag">{tag}</span>' for tag in self.tags) + '</div>' if self.tags else ''}
-    
+
+    <p class="app-description">{safe_description}</p>
+
+    {'<div class="app-tags">' + ''.join(f'<span class="tag">{tag}</span>' for tag in safe_tags) + '</div>' if safe_tags else ''}
+
     <div class="app-actions">
-        <button class="btn btn-primary install-btn" onclick="installApp('{self.app_id}')">
+        <button class="btn btn-primary install-btn" onclick="installApp('{safe_app_id}')">
             ⬇️ Install
         </button>
-        <button class="btn btn-secondary more-info-btn" onclick="expandCard('{self.app_id}')">
+        <button class="btn btn-secondary more-info-btn" onclick="expandCard('{safe_app_id}')">
             More Info
         </button>
     </div>
 </div>
 """
-        return html
+        return html_str
     
     def to_json(self) -> Dict:
         """Export as JSON for API"""
@@ -203,7 +233,7 @@ class InstallationProgress:
             InstallationState.COMPLETE: "Installation complete!",
             InstallationState.FAILED: "Installation failed!"
         }
-        
+
         state_colors = {
             InstallationState.IDLE: "#6b7280",
             InstallationState.ANALYZING: "#2563eb",
@@ -213,31 +243,35 @@ class InstallationProgress:
             InstallationState.COMPLETE: "#16a34a",
             InstallationState.FAILED: "#dc2626"
         }
-        
-        html = f"""
+
+        # Escape user-provided data to prevent XSS
+        safe_app_name = html.escape(self.app_name, quote=True)
+        safe_current_step = html.escape(self.current_step, quote=True) if self.current_step else ""
+
+        html_str = f"""
 <div class="installation-progress">
-    <h2>{self.app_name}</h2>
-    
+    <h2>{safe_app_name}</h2>
+
     <div class="progress-bar-container">
         <div class="progress-bar" style="width: {self.progress}%; background-color: {state_colors[self.state]}">
         </div>
     </div>
-    
+
     <p class="progress-percentage">{self.progress}% - {self.steps_completed}/{self.total_steps} steps</p>
-    
+
     <p class="progress-status" style="color: {state_colors[self.state]}">
         {state_messages[self.state]}
     </p>
-    
-    {'<p class="progress-detail">' + self.current_step + '</p>' if self.current_step else ''}
-    
+
+    {'<p class="progress-detail">' + safe_current_step + '</p>' if self.current_step else ''}
+
     <div class="progress-actions">
         {'<button class="btn btn-secondary" onclick="pauseInstallation()">⏸️ Pause</button>' if self.state in [InstallationState.DOWNLOADING, InstallationState.BUILDING] else ''}
         {'<button class="btn btn-danger" onclick="cancelInstallation()">✕ Cancel</button>' if self.state not in [InstallationState.IDLE, InstallationState.COMPLETE, InstallationState.FAILED] else ''}
     </div>
 </div>
 """
-        return html
+        return html_str
 
 
 class GitHubSearch:
@@ -425,9 +459,10 @@ class AppCatalog:
 """
         
         for category, apps in self.categories.items():
+            safe_category = html.escape(category)
             html += f"""
     <div class="catalog-section">
-        <h2>{category}</h2>
+        <h2>{safe_category}</h2>
         <div class="apps-grid">
 """
             for app in apps:

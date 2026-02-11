@@ -127,7 +127,8 @@ class TestManifestValidation:
             "trust": {"verification": "none"}
         }
         
-        with pytest.raises(Exception):  # ValidationError
+        from jsonschema.exceptions import ValidationError
+        with pytest.raises(ValidationError):
             ManifestValidator.validate(invalid_manifest)
 
 
@@ -196,7 +197,7 @@ class TestWASMFallback:
             source=Source(type="github_repo"),
             versions=Versions(strategy="semver"),
             build=Build(strategy="native"),  # Native build (good for WASM)
-            run=Run(type="cli", entrypoint="app"),  # CLI (compatible)
+            run=Run(type=RuntimeType.CLI, entrypoint="app"),  # CLI (compatible)
             security=Security(
                 sandbox="strict",
                 network=NetworkPolicy.NONE,
@@ -229,7 +230,7 @@ class TestWASMFallback:
             source=Source(type="github_repo"),
             versions=Versions(strategy="semver"),
             build=Build(strategy="native"),
-            run=Run(type="cli", entrypoint="app"),
+            run=Run(type=RuntimeType.CLI, entrypoint="app"),
             security=Security(
                 sandbox="strict",
                 network=NetworkPolicy.NONE,

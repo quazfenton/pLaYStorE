@@ -13,15 +13,22 @@ try:
     
     # Test that the fixes are in place
     from client.ui import AppStoreUI
-    ui_instance = AppStoreUI.__new__(AppStoreUI)
+    import tkinter as tk
     
+    # Create a minimal root window for testing
+    root = tk.Tk()
+    ui_instance = AppStoreUI(root)
+
     # Check that installed_app_ids attribute exists
     assert hasattr(ui_instance, 'installed_app_ids'), "installed_app_ids attribute missing"
     print("✓ installed_app_ids attribute exists")
-    
+
     # Check that _previous_view is handled properly in back_to_previous_view
-    assert hasattr(ui_instance, '_previous_view') or True, "_previous_view is handled dynamically"
+    assert hasattr(ui_instance, '_previous_view'), "_previous_view attribute missing"
     print("✓ Previous view tracking mechanism is in place")
+    
+    # Clean up
+    root.destroy()
     
     print("\n✓ All fixes have been applied successfully!")
     

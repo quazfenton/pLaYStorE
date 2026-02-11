@@ -248,13 +248,13 @@ class PlatformOrchestrator:
     async def _stage_validation(self, manifest: Dict) -> Dict[str, Any]:
         """Stage 2: Validate manifest"""
         try:
-            from altstore.core.types.manifest_schema import ManifestValidator
-            
+            from playstorE.core.types.manifest_schema import ManifestValidator
+
             is_valid = ManifestValidator.validate(manifest)
-            
+
             # Run formal verification
             formal_check = self.formal_verifier.verify_manifest(manifest)
-            
+
             return {
                 "valid": is_valid and formal_check.get("satisfied", False),
                 "errors": formal_check.get("unsatisfied_constraints", [])
@@ -268,14 +268,16 @@ class PlatformOrchestrator:
     async def _stage_build(self, manifest: Dict) -> Optional[Dict]:
         """Stage 3: Build application"""
         try:
-            # This would use the reproducible build engine
-            # For now, return mock result
-            return {
-                "success": True,
-                "hash": "sha256:mockbuildhash1234567890abcdef",
-                "reproducibility_level": "R2",
-                "artifacts": []
-            }
+            # Use the reproducibility engine to build the application
+            build_result = await self.reproducibility_engine.build_application(manifest)
+            
+            return build_result
+        except NotImplementedError:
+            # If the reproducibility engine is not yet implemented, raise with a clear message
+            raise NotImplementedError(
+                "Build stage not yet implemented. The reproducibility engine is not yet available. "
+                "This is a placeholder that should be replaced with actual build functionality."
+            )
         except Exception as e:
             print(f"Build failed: {e}")
             return None
@@ -315,8 +317,8 @@ class PlatformOrchestrator:
     ) -> Dict[str, Any]:
         """Stage 5: Prepare WASM fallback"""
         try:
-            from altstore.core.types.manifest_schema import ManifestValidator
-            
+            from playstorE.core.types.manifest_schema import ManifestValidator
+
             manifest_obj = ManifestValidator.from_dict(manifest)
             
             # Check if WASM fallback is appropriate
@@ -388,14 +390,27 @@ class PlatformOrchestrator:
         """Stage 7: Install from capsule"""
         try:
             allow_wasm = user_preferences.get("allow_wasm", True)
-            
-            result = self.installer.install_from_capsule(
-                capsule_path,
-                allow_wasm_fallback=allow_wasm
-            )
-            
+
+            # Try to call install_from_capsule with install_path parameter
+            # If the method doesn't support install_path, fall back to the old signature
+            try:
+                result = self.installer.install_from_capsule(
+                    capsule_path,
+                    install_path=install_path,
+                    allow_wasm_fallback=allow_wasm
+                )
+            except TypeError:
+                # If install_path parameter is not supported, call without it
+                result = self.installer.install_from_capsule(
+                    capsule_path,
+                    allow_wasm_fallback=allow_wasm
+                )
+                # In this case, we need to manually handle the install path
+                # The installer might use a default path, so we return the requested path
+                result.setdefault("install_path", install_path)
+
             return result
-        
+
         except Exception as e:
             return {
                 "success": False,

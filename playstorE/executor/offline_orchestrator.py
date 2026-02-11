@@ -163,14 +163,15 @@ class OfflineCapsuleBuilder:
             manifest_path = capsule_temp / "metadata" / "manifest.json"
             manifest_path.write_text(json.dumps(manifest, indent=2))
             manifest_hash = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-            
-            # Create capsule metadata
-            capsule_manifest = OfflineCapsuleManifest(
+
+            # Save capsule metadata
+            # We'll create a temporary manifest first without content_hash
+            temp_capsule_manifest = OfflineCapsuleManifest(
                 capsule_id=capsule_id,
                 app_id=app_id,
                 version=version,
                 platform=platform,
-                content_hash=self._compute_capsule_hash(capsule_temp),
+                content_hash="",  # Will be computed after all files are written
                 manifest_hash=manifest_hash,
                 artifact_hashes=artifact_hashes,
                 timestamp=datetime.utcnow().isoformat() + "Z",
@@ -179,20 +180,42 @@ class OfflineCapsuleBuilder:
                 wasm_fallback_available=wasm_artifact is not None,
                 wasm_build_hash=wasm_hash
             )
-            
-            # Save capsule metadata
+
+            # Save capsule metadata temporarily
             metadata_file = capsule_temp / "metadata" / "capsule.json"
-            metadata_file.write_text(json.dumps(asdict(capsule_manifest), indent=2))
-            
+            metadata_file.write_text(json.dumps(asdict(temp_capsule_manifest), indent=2))
+
             # Store trust snapshot if provided
             if trust_snapshot:
                 trust_file = capsule_temp / "metadata" / "trust_snapshot.json"
                 trust_file.write_text(json.dumps(asdict(trust_snapshot), indent=2))
-            
+
             # Create checksums file
             checksums = self._compute_checksums(capsule_temp)
             checksums_file = capsule_temp / "metadata" / "checksums.json"
             checksums_file.write_text(json.dumps(checksums, indent=2))
+
+            # NOW compute the content hash after all files are written
+            final_content_hash = self._compute_capsule_hash(capsule_temp)
+
+            # Create the final manifest with the correct content hash
+            final_capsule_manifest = OfflineCapsuleManifest(
+                capsule_id=capsule_id,
+                app_id=app_id,
+                version=version,
+                platform=platform,
+                content_hash=final_content_hash,
+                manifest_hash=manifest_hash,
+                artifact_hashes=artifact_hashes,
+                timestamp=datetime.utcnow().isoformat() + "Z",
+                trust_score=0.8,  # Would come from trust system
+                reproducibility_level="R2",
+                wasm_fallback_available=wasm_artifact is not None,
+                wasm_build_hash=wasm_hash
+            )
+
+            # Save the final capsule metadata with correct content hash
+            metadata_file.write_text(json.dumps(asdict(final_capsule_manifest), indent=2))
             
             # Create tarball capsule
             self._create_capsule_archive(capsule_temp, capsule_path)
@@ -355,8 +378,14 @@ class OfflineInstallationManager:
     def _extract_capsule(self, capsule_path: str, extract_dir: Path):
         """Extract capsule archive"""
         import tarfile
-        
+
         with tarfile.open(capsule_path, "r:gz") as tar:
+            # Safe extraction with path traversal protection
+            for member in tar.getmembers():
+                # Check for path traversal
+                member_path = (extract_dir / member.name).resolve()
+                if not str(member_path).startswith(str(extract_dir.resolve())):
+                    raise ValueError(f"Path traversal detected: {member.name}")
             tar.extractall(extract_dir)
     
     def _verify_capsule_integrity(
@@ -364,26 +393,66 @@ class OfflineInstallationManager:
         capsule_dir: Path,
         capsule_manifest: Dict[str, Any]
     ) -> Tuple[bool, Optional[str]]:
-        """Verify capsule integrity using checksums"""
+        """Verify capsule integrity using content hash and checksums"""
+        # First, verify the content hash matches the entire capsule
+        computed_content_hash = self._compute_capsule_hash(capsule_dir)
+        expected_content_hash = capsule_manifest.get("content_hash")
+        
+        if not expected_content_hash:
+            return False, "No content hash in manifest for verification"
+        
+        if computed_content_hash != expected_content_hash:
+            return False, f"Content hash mismatch: expected {expected_content_hash}, got {computed_content_hash}"
+        
+        # Optionally, also verify individual file checksums as an additional check
         checksums_file = capsule_dir / "metadata" / "checksums.json"
-        expected_checksums = json.loads(checksums_file.read_text())
+        if checksums_file.exists():
+            try:
+                expected_checksums = json.loads(checksums_file.read_text())
+                
+                # Verify each file
+                for rel_path, expected_hash in expected_checksums.items():
+                    filepath = capsule_dir / rel_path
+                    if not filepath.exists():
+                        return False, f"Missing file: {rel_path}"
+
+                    # Skip checksum files themselves
+                    if rel_path.endswith("checksums.json"):
+                        continue
+
+                    with open(filepath, "rb") as f:
+                        actual_hash = hashlib.sha256(f.read()).hexdigest()
+
+                    if actual_hash != expected_hash:
+                        return False, f"Checksum mismatch for {rel_path}"
+            except Exception as e:
+                # If checksums.json is corrupted, we still have the content hash verification
+                # So we can continue with just the content hash check
+                pass
         
-        # Verify each file
-        for rel_path, expected_hash in expected_checksums.items():
-            filepath = capsule_dir / rel_path
-            if not filepath.exists():
-                return False, f"Missing file: {rel_path}"
-            
-            # Skip checksum files themselves
-            if rel_path.endswith("checksums.json"):
-                continue
-            
-            with open(filepath, "rb") as f:
-                actual_hash = hashlib.sha256(f.read()).hexdigest()
-            
-            if actual_hash != expected_hash:
-                return False, f"Checksum mismatch for {rel_path}"
-        
+        # Check for any extra files not in the expected list
+        checksums_file = capsule_dir / "metadata" / "checksums.json"
+        if checksums_file.exists():
+            try:
+                expected_checksums = json.loads(checksums_file.read_text())
+                expected_paths = set(expected_checksums.keys())
+                
+                actual_paths = set()
+                for filepath in capsule_dir.rglob("*"):
+                    if filepath.is_file():
+                        rel_path = str(filepath.relative_to(capsule_dir))
+                        actual_paths.add(rel_path)
+                
+                # Exclude the checksums file itself from the check
+                expected_paths.discard("metadata/checksums.json")
+                
+                extra_files = actual_paths - expected_paths
+                if extra_files:
+                    return False, f"Extra files detected in capsule: {extra_files}"
+            except Exception:
+                # If we can't read checksums, skip this check
+                pass
+
         return True, None
     
     def _select_execution_mode(
@@ -466,8 +535,8 @@ exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
             fallback_reason = FallbackReason(install_metadata["fallback_reason"])
         
         # Execute based on mode
-        start_time = datetime.now()
-        
+        start_time = datetime.utcnow()
+
         try:
             if execution_mode == ExecutionMode.NATIVE:
                 result = self._run_native(app_install_dir, args or [])
@@ -475,23 +544,24 @@ exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
                 result = self._run_wasm(app_install_dir, args or [])
             else:
                 raise RuntimeError(f"Cannot auto-execute in {execution_mode} mode. Manual execution required.")
-            
+
             stdout, stderr, exit_code = result
-        
+
         except Exception as e:
             stdout = ""
             stderr = str(e)
             exit_code = 1
-        
-        duration = (datetime.now() - start_time).total_seconds()
-        
+
+        completed_time = datetime.utcnow()
+        duration = (completed_time - start_time).total_seconds()
+
         trace = ExecutionTrace(
             app_id=app_id,
             version=version,
             mode=execution_mode,
             fallback_reason=fallback_reason,
             started_at=start_time.isoformat() + "Z",
-            completed_at=datetime.now().isoformat() + "Z",
+            completed_at=completed_time.isoformat() + "Z",
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
@@ -504,26 +574,58 @@ exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
     def _run_native(self, app_dir: Path, args: List[str]) -> Tuple[str, str, int]:
         """Execute native binary"""
         import subprocess
+        import json
+
+        # Load installation metadata to get the entrypoint
+        install_metadata_file = app_dir / "install.json"
+        if not install_metadata_file.exists():
+            raise RuntimeError("Installation metadata not found")
         
-        # Find executable
-        exe_file = None
-        for f in app_dir.iterdir():
-            if f.is_file() and (f.stat().st_mode & 0o111):
-                exe_file = f
-                break
+        install_metadata = json.loads(install_metadata_file.read_text())
+        app_manifest_file = app_dir.parent / f"{install_metadata['app_id']}_{install_metadata['version']}_manifest.json"
         
-        if not exe_file:
-            raise RuntimeError("No executable found in installation")
-        
-        result = subprocess.run(
-            [str(exe_file)] + args,
-            cwd=app_dir,
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minute timeout
-        )
-        
-        return result.stdout, result.stderr, result.returncode
+        # Try to find manifest in the capsule metadata directory if available
+        capsule_metadata_dir = app_dir / "metadata"
+        if (capsule_metadata_dir / "manifest.json").exists():
+            app_manifest = json.loads((capsule_metadata_dir / "manifest.json").read_text())
+        else:
+            # If no manifest in app_dir, we need to use the install metadata to determine entrypoint
+            # For now, we'll look for a default executable name based on app_id
+            app_id = install_metadata['app_id']
+            app_name = app_id.split('.')[-1]  # Get last part of app_id as app name
+            
+            # Look for common executable names
+            possible_executables = [
+                app_name,
+                app_name.lower(),
+                app_name.upper(),
+                f"{app_name}.exe",  # Windows
+                f"{app_name}.bin",
+                "app",
+                "main",
+                "executable",
+                "program"
+            ]
+            
+            exe_file = None
+            for exe_name in possible_executables:
+                exe_path = app_dir / exe_name
+                if exe_path.exists() and exe_path.is_file() and (exe_path.stat().st_mode & 0o111):
+                    exe_file = exe_path
+                    break
+            
+            if not exe_file:
+                raise RuntimeError(f"No executable found in installation for app: {app_id}")
+            
+            result = subprocess.run(
+                [str(exe_file)] + args,
+                cwd=app_dir,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+
+            return result.stdout, result.stderr, result.returncode
     
     def _run_wasm(self, app_dir: Path, args: List[str]) -> Tuple[str, str, int]:
         """Execute WASM binary"""

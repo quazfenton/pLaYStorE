@@ -137,7 +137,7 @@ class GitHubExplorer:
             "order": "desc",
             "per_page": min(limit, 100)
         }
-        
+
         session = await self._get_session()
         async with session.get(url, headers=self.headers, params=params) as resp:
             if resp.status != 200:
@@ -156,7 +156,7 @@ class GitHubExplorer:
                     stars=item.get("stargazers_count", 0),
                     language=item.get("language", "Unknown"),
                     topics=item.get("topics", []),
-                    has_releases=item.get("has_downloads", False),
+                    has_releases=bool(item.get("releases_url")),
                     license=(item.get("license") or {}).get("name"),
                     forks=item.get("forks_count", 0),
                     watchers=item.get("watchers_count", 0),
@@ -253,6 +253,15 @@ class GitHubExplorer:
                 raise Exception(f"Failed to fetch repo: {resp.status}")
 
             data = await resp.json()
+
+            # Fetch latest release information to correctly determine has_releases
+            latest_release_tag = None
+            try:
+                latest_release_tag = await self._get_latest_release(repo_full_name)
+            except Exception: # Catching specific exceptions is generally better, but maintaining current pattern for now
+                # If fetching latest release fails, assume no latest release available
+                pass
+            
             return GitHubRepo(
                 owner=data["owner"]["login"],
                 name=data["name"],
@@ -262,7 +271,8 @@ class GitHubExplorer:
                 stars=data.get("stargazers_count", 0),
                 language=data.get("language", "Unknown"),
                 topics=data.get("topics", []),
-                has_releases=data.get("has_downloads", False),
+                has_releases=bool(latest_release_tag), # Correctly derive from actual release check
+                latest_release=latest_release_tag,      # Populate the latest_release field
                 license=(data.get("license") or {}).get("name"),
                 forks=data.get("forks_count", 0),
                 watchers=data.get("watchers_count", 0),

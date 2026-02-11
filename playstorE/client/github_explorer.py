@@ -391,17 +391,18 @@ class GitHubExplorer:
 
         # Check for suspicious patterns in README
         suspicious_patterns = [
-            r"curl\s+.*\|\s*sh",
-            r"wget\s+.*\|\s*sh",
-            r"crypto",
-            r"mine",
-            r"ethereum",
-            r"bitcoin"
+            (r"curl\s+.*\|\s*sh", 0.2),
+            (r"wget\s+.*\|\s*sh", 0.2),
+            (r"\bcryptomin(?:er|ing)\b", 0.2),
+            (r"\b(?:mine|mining)\s+(?:crypto|cryptocurrency|coin|bitcoin|ethereum)\b", 0.2),
+            (r"\b(?:wallet|exploit|malware|backdoor)\b", 0.2),
+            (r"\b(?:crypto|ethereum|bitcoin)\b", 0.05)
         ]
 
-        for pattern in suspicious_patterns:
-            if re.search(pattern, readme.lower()):
-                risk_score += 0.2
+        readme_lower = readme.lower()
+        for pattern, weight in suspicious_patterns:
+            if re.search(pattern, readme_lower):
+                risk_score += weight
 
         # Positive safety signals
         has_license = "LICENSE" in files or "COPYING" in files
@@ -560,35 +561,40 @@ class GitHubExplorer:
 class OneClickInstaller:
     """
     Streamlined installation interface for non-technical users.
-    
+
     Provides a simple "Install -> Run" flow with automatic
     configuration and safety checking.
     """
-    
+
     def __init__(self):
         self.explorer = GitHubExplorer()
-    
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.explorer.close()
+
+    async def close(self):
+        await self.explorer.close()
+
     async def install_repo(
         self,
         repo_full_name: str,
-        install_path: str,
-        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         One-click installation flow for GitHub repositories.
-        
+
         Args:
             repo_full_name: Repository in format "owner/name"
-            install_path: Where to install the application
-            user_id: Optional user identifier for tracking
-        
+
         Returns:
             Installation result with status and manifest
         """
         try:
             # Analyze repository
             analysis = await self.explorer.analyze_repo(repo_full_name)
-            
+
             # Check if safe
             if not analysis.is_safe:
                 return {
@@ -596,7 +602,7 @@ class OneClickInstaller:
                     "error": f"Repository has safety concerns (risk score: {analysis.risk_score:.2f})",
                     "analysis": asdict(analysis)
                 }
-            
+
             # Check minimum confidence
             if analysis.confidence < 0.4:
                 return {
@@ -604,7 +610,7 @@ class OneClickInstaller:
                     "error": "Repository analysis confidence too low",
                     "analysis": asdict(analysis)
                 }
-            
+
             # Would continue with actual installation here
             # For now, return the manifest and analysis
             return {
@@ -614,7 +620,7 @@ class OneClickInstaller:
                 "manifest": analysis.suggested_manifest,
                 "next_step": "review_manifest"
             }
-        
+
         except Exception as e:
             return {
                 "success": False,

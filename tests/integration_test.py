@@ -23,8 +23,7 @@ from pathlib import Path
 class TestGitHubDiscovery:
     """Tests GitHub explorer functionality"""
     
-    @pytest.mark.asyncio
-    async def test_github_explorer_initialization(self):
+    pytest-asyncio==0.21.1
         """Test GitHubExplorer can be initialized"""
         from playstorE.client.github_explorer import GitHubExplorer
         
@@ -183,7 +182,7 @@ class TestWASMFallback:
         from playstorE.executor.wasm import WASMCompatibilityChecker
         from playstorE.core.types.manifest_schema import (
             AppManifest, Publisher, Source, Versions, Build, Run,
-            Security, Trust, NetworkPolicy, FilesystemPolicy
+            Security, Trust, NetworkPolicy, FilesystemPolicy, RuntimeType
         )
         
         checker = WASMCompatibilityChecker()

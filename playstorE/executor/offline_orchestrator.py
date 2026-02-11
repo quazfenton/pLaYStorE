@@ -193,9 +193,7 @@ class OfflineCapsuleBuilder:
             # Create checksums file
             checksums = self._compute_checksums(capsule_temp)
             checksums_file = capsule_temp / "metadata" / "checksums.json"
-            checksums_file.write_text(json.dumps(checksums, indent=2))
-
-            # NOW compute the content hash after all files are written
+            # Compute the content hash before writing self-referential metadata files
             final_content_hash = self._compute_capsule_hash(capsule_temp)
 
             # Create the final manifest with the correct content hash
@@ -216,7 +214,11 @@ class OfflineCapsuleBuilder:
 
             # Save the final capsule metadata with correct content hash
             metadata_file.write_text(json.dumps(asdict(final_capsule_manifest), indent=2))
-            
+
+            # Create checksums file after all other files are finalized
+            checksums = self._compute_checksums(capsule_temp)
+            checksums_file.write_text(json.dumps(checksums, indent=2))
+
             # Create tarball capsule
             self._create_capsule_archive(capsule_temp, capsule_path)
             
@@ -233,6 +235,8 @@ class OfflineCapsuleBuilder:
         # Hash files in deterministic order
         for filepath in sorted(capsule_dir.rglob("*")):
             if filepath.is_file():
+                rel_path = filepath.relative_to(capsule_dir)
+                hasher.update(str(rel_path).encode())
                 with open(filepath, "rb") as f:
                     hasher.update(f.read())
         
@@ -253,9 +257,9 @@ class OfflineCapsuleBuilder:
     def _create_capsule_archive(self, capsule_dir: Path, output_path: Path):
         """Create compressed capsule archive"""
         import tarfile
-        
+
         with tarfile.open(output_path, "w:gz") as tar:
-            tar.add(capsule_dir, arcname=capsule_dir.name)
+            tar.add(capsule_dir, arcname="capsule")
 
 
 class OfflineInstallationManager:
@@ -296,72 +300,81 @@ class OfflineInstallationManager:
         try:
             # Extract and verify capsule
             capsule_dir = Path(tempfile.mkdtemp(prefix="capsule_extract_"))
-            self._extract_capsule(capsule_path, capsule_dir)
-            
-            # Load capsule metadata
-            metadata_file = capsule_dir / "metadata" / "capsule.json"
-            capsule_manifest = json.loads(metadata_file.read_text())
-            
-            # Verify integrity
-            is_valid, error = self._verify_capsule_integrity(capsule_dir, capsule_manifest)
-            if not is_valid:
-                return {"success": False, "error": error}
-            
-            # Load application manifest
-            app_manifest_file = capsule_dir / "metadata" / "manifest.json"
-            app_manifest = json.loads(app_manifest_file.read_text())
-            
-            # Create installation directory
-            app_id = capsule_manifest["app_id"]
-            version = capsule_manifest["version"]
-            app_install_dir = self.install_dir / f"{app_id}_{version}"
-            app_install_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Determine execution mode
-            execution_mode = self._select_execution_mode(
-                capsule_manifest,
-                app_manifest,
-                allow_wasm_fallback
-            )
-            
-            # Install artifacts based on mode
-            if execution_mode == ExecutionMode.NATIVE:
-                self._install_native_artifacts(capsule_dir, app_install_dir)
-                fallback_reason = None
-            
-            elif execution_mode == ExecutionMode.WASM:
-                if not capsule_manifest.get("wasm_fallback_available"):
+            try:
+                self._extract_capsule(capsule_path, capsule_dir)
+                
+                # Load capsule metadata
+                metadata_file = capsule_dir / "metadata" / "capsule.json"
+                capsule_manifest = json.loads(metadata_file.read_text())
+                
+                # Verify integrity
+                is_valid, error = self._verify_capsule_integrity(capsule_dir, capsule_manifest)
+                if not is_valid:
+                    return {"success": False, "error": error}
+                
+                # Load application manifest
+                app_manifest_file = capsule_dir / "metadata" / "manifest.json"
+                app_manifest = json.loads(app_manifest_file.read_text())
+                
+                # Create installation directory
+                app_id = capsule_manifest["app_id"]
+                version = capsule_manifest["version"]
+                app_install_dir = self.install_dir / f"{app_id}_{version}"
+                app_install_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Determine execution mode
+                execution_mode = self._select_execution_mode(
+                    capsule_manifest,
+                    app_manifest,
+                    allow_wasm_fallback
+                )
+                
+                # Install artifacts based on mode
+                if execution_mode == ExecutionMode.NATIVE:
+                    self._install_native_artifacts(capsule_dir, app_install_dir)
+                    fallback_reason = None
+                
+                elif execution_mode == ExecutionMode.WASM:
+                    if not capsule_manifest.get("wasm_fallback_available"):
+                        return {
+                            "success": False,
+                            "error": "Native execution unavailable and WASM fallback not available"
+                        }
+                    
+                    self._install_wasm_artifacts(capsule_dir, app_install_dir)
+                    fallback_reason = FallbackReason.NATIVE_FAILED
+                
+                else:
                     return {
                         "success": False,
-                        "error": "Native execution unavailable and WASM fallback not available"
+                        "error": f"Execution mode {execution_mode} not supported in offline mode"
                     }
                 
-                self._install_wasm_artifacts(capsule_dir, app_install_dir)
-                fallback_reason = FallbackReason.NATIVE_FAILED
-            
-            else:
-                return {
-                    "success": False,
-                    "error": f"Execution mode {execution_mode} not supported in offline mode"
+                # Save installation metadata
+                install_metadata = {
+                    "capsule_id": capsule_manifest["capsule_id"],
+                    "app_id": app_id,
+                    "version": version,
+                    "installed_at": datetime.utcnow().isoformat() + "Z",
+                    "execution_mode": execution_mode.value,
+                    "fallback_reason": fallback_reason.value if fallback_reason else None,
+                    "trust_score": capsule_manifest.get("trust_score"),
+                    "reproducibility_level": capsule_manifest.get("reproducibility_level")
                 }
-            
-            # Save installation metadata
-            install_metadata = {
-                "capsule_id": capsule_manifest["capsule_id"],
-                "app_id": app_id,
-                "version": version,
-                "installed_at": datetime.utcnow().isoformat() + "Z",
-                "execution_mode": execution_mode.value,
-                "fallback_reason": fallback_reason.value if fallback_reason else None,
-                "trust_score": capsule_manifest.get("trust_score"),
-                "reproducibility_level": capsule_manifest.get("reproducibility_level")
-            }
-            
-            install_metadata_file = app_install_dir / "install.json"
-            install_metadata_file.write_text(json.dumps(install_metadata, indent=2))
-            
-            # Cleanup
-            shutil.rmtree(capsule_dir, ignore_errors=True)
+                
+                install_metadata_file = app_install_dir / "install.json"
+                install_metadata_file.write_text(json.dumps(install_metadata, indent=2))
+                
+                return {
+                    "success": True,
+                    "app_id": app_id,
+                    "version": version
+                }
+            finally:
+                # Cleanup
+                shutil.rmtree(capsule_dir, ignore_errors=True)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
             
             return {
                 "success": True,
@@ -381,12 +394,14 @@ class OfflineInstallationManager:
 
         with tarfile.open(capsule_path, "r:gz") as tar:
             # Safe extraction with path traversal protection
+            safe_members = []
             for member in tar.getmembers():
                 # Check for path traversal
                 member_path = (extract_dir / member.name).resolve()
                 if not str(member_path).startswith(str(extract_dir.resolve())):
                     raise ValueError(f"Path traversal detected: {member.name}")
-            tar.extractall(extract_dir)
+                safe_members.append(member)
+            tar.extractall(extract_dir, members=safe_members)
     
     def _verify_capsule_integrity(
         self,
@@ -580,20 +595,39 @@ exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
         install_metadata_file = app_dir / "install.json"
         if not install_metadata_file.exists():
             raise RuntimeError("Installation metadata not found")
-        
+
         install_metadata = json.loads(install_metadata_file.read_text())
         app_manifest_file = app_dir.parent / f"{install_metadata['app_id']}_{install_metadata['version']}_manifest.json"
-        
+
         # Try to find manifest in the capsule metadata directory if available
         capsule_metadata_dir = app_dir / "metadata"
         if (capsule_metadata_dir / "manifest.json").exists():
             app_manifest = json.loads((capsule_metadata_dir / "manifest.json").read_text())
-        else:
-            # If no manifest in app_dir, we need to use the install metadata to determine entrypoint
-            # For now, we'll look for a default executable name based on app_id
+            # Get entrypoint from manifest, supporting multiple possible locations
+            entrypoint = None
+            if isinstance(app_manifest.get('entrypoint'), str):
+                entrypoint = app_manifest['entrypoint']
+            elif isinstance(app_manifest.get('run', {}).get('entrypoint'), str):
+                entrypoint = app_manifest['run']['entrypoint']
+            elif isinstance(app_manifest.get('executable'), str):
+                entrypoint = app_manifest['executable']
+
+            if entrypoint:
+                exe_file = app_dir / entrypoint
+                if exe_file.exists() and exe_file.is_file() and (exe_file.stat().st_mode & 0o111):
+                    result = subprocess.run(
+                        [str(exe_file)] + args,
+                        cwd=app_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=300  # 5 minute timeout
+                    )
+                    return result.stdout, result.stderr, result.returncode
+
+            # Fall back to heuristic search if manifest entrypoint is not found/executable
             app_id = install_metadata['app_id']
             app_name = app_id.split('.')[-1]  # Get last part of app_id as app name
-            
+
             # Look for common executable names
             possible_executables = [
                 app_name,
@@ -606,17 +640,17 @@ exec $WASM_ENGINE --dir=. "$WASM_FILE" "$@"
                 "executable",
                 "program"
             ]
-            
+
             exe_file = None
             for exe_name in possible_executables:
                 exe_path = app_dir / exe_name
                 if exe_path.exists() and exe_path.is_file() and (exe_path.stat().st_mode & 0o111):
                     exe_file = exe_path
                     break
-            
+
             if not exe_file:
                 raise RuntimeError(f"No executable found in installation for app: {app_id}")
-            
+
             result = subprocess.run(
                 [str(exe_file)] + args,
                 cwd=app_dir,

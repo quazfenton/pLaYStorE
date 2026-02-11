@@ -413,11 +413,14 @@ class AppStoreUI:
         if not apps:
             mock_apps = [
                 UIAppInfo("com.example.app1", "Example App 1", "A great example application",
-                         "Example Publisher", "1.0.0", 0.92, "15 MB", is_installed=False),
+                         "Example Publisher", "1.0.0", 0.92, "15 MB",
+                         is_installed="com.example.app1" in self.installed_app_ids),
                 UIAppInfo("com.example.app2", "Another App", "Another useful application",
-                         "Another Publisher", "2.1.0", 0.87, "22 MB", is_installed=True),
+                         "Another Publisher", "2.1.0", 0.87, "22 MB",
+                         is_installed="com.example.app2" in self.installed_app_ids),
                 UIAppInfo("org.test.utility", "Test Utility", "A handy utility tool",
-                         "Test Developer", "1.5.3", 0.78, "8 MB", is_installed=False),
+                         "Test Developer", "1.5.3", 0.78, "8 MB",
+                         is_installed="org.test.utility" in self.installed_app_ids),
             ]
             apps.extend(mock_apps)
 

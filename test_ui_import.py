@@ -24,6 +24,7 @@ try:
     print("✓ installed_app_ids attribute exists")
 
     # Check that _previous_view is handled properly in back_to_previous_view
+    ui_instance.show_app_details(UIAppInfo("test", "test", "test", "test", "test"))
     assert hasattr(ui_instance, '_previous_view'), "_previous_view attribute missing"
     print("✓ Previous view tracking mechanism is in place")
     

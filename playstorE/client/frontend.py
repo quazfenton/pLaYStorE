@@ -137,7 +137,7 @@ class AppCard:
         
         # Sanitize icon URL to prevent javascript: or data: URIs
         safe_icon_url = self.icon_url
-        if self.icon_url and (self.icon_url.startswith(('http://', 'https://', '//'))):
+        if self.icon_url and self.icon_url.startswith(('http://', 'https://')):
             safe_icon_url = html.escape(self.icon_url, quote=True)
         else:
             safe_icon_url = None  # Don't render unsafe URLs
@@ -444,33 +444,35 @@ class AppCatalog:
     
     def to_html(self) -> str:
         """Render catalog"""
-        html = """
+        output = """
 <div class="app-catalog">
     <div class="catalog-section">
         <h2>Featured Apps</h2>
         <div class="apps-grid">
 """
         for app in self.featured_apps:
-            html += app.to_html()
-        
-        html += """
+            output += app.to_html()
+
+        output += """
         </div>
     </div>
 """
-        
+
         for category, apps in self.categories.items():
             safe_category = html.escape(category)
-            html += f"""
+            output += f"""
     <div class="catalog-section">
         <h2>{safe_category}</h2>
         <div class="apps-grid">
 """
             for app in apps:
-                html += app.to_html()
-            html += """
+                output += app.to_html()
+            output += """
         </div>
     </div>
 """
+
+        return output
         
         html += """
 </div>

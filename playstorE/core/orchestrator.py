@@ -290,9 +290,11 @@ class PlatformOrchestrator:
     ) -> Dict[str, Any]:
         """Stage 4: Security assessment"""
         try:
+            from playstorE.core.types.manifest_schema import ManifestValidator
+            manifest_obj = ManifestValidator.from_dict(manifest)
             # Use security manager
             assessment = self.security_manager.assess_application(
-                manifest,
+                manifest_obj,
                 build_result.get("reproducibility_level", "R0"),
                 "safe",  # Would come from malware detection
                 analysis_result.confidence if analysis_result else 0

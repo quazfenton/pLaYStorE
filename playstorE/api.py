@@ -1,27 +1,67 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import asyncio
 import os
+import logging
 from pathlib import Path
+from datetime import datetime
 
 from playstorE.core.orchestrator import PlatformOrchestrator
 from playstorE.client.github_explorer import GitHubExplorer
+from playstorE.storage.workflow_store import WorkflowStore
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AltStore API", description="Backend API for the Alternative App Store")
 
-# Enable CORS for frontend development
+# Configure CORS with secure defaults
+# Get allowed origins from environment variable (comma-separated for multiple origins)
+frontend_urls = os.getenv("FRONTEND_URL", "http://localhost:3000")
+allowed_origins = [url.strip() for url in frontend_urls.split(",") if url.strip()]
+
+# Security: Validate origins to prevent misconfiguration
+validated_origins = []
+for origin in allowed_origins:
+    # Only allow http/https schemes
+    if origin.startswith(("http://", "https://")):
+        validated_origins.append(origin)
+    else:
+        logger.warning(f"Invalid CORS origin (must start with http:// or https://): {origin}")
+
+# Fallback to localhost if no valid origins
+if not validated_origins:
+    validated_origins = ["http://localhost:3000"]
+    logger.info("Using default CORS origin: http://localhost:3000")
+
+logger.info(f"CORS enabled for origins: {validated_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify the frontend URL
+    allow_origins=validated_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    expose_headers=["X-Request-ID"],
+    max_age=600,  # Cache preflight for 10 minutes
 )
 
+# Initialize workflow persistence
+workflow_storage_path = os.getenv("WORKFLOW_STORAGE", "./data/workflows")
+try:
+    workflows = WorkflowStore(storage_path=workflow_storage_path)
+    logger.info(f"Workflow persistence initialized at {workflow_storage_path}")
+except Exception as e:
+    logger.error(f"Failed to initialize workflow storage: {e}")
+    # Fallback to in-memory storage (will lose data on restart)
+    workflows = {}
+    logger.warning("Using in-memory workflow storage (data will be lost on restart)")
+
 # Global orchestrator instance
-orchestrator = PlatformOrchestrator(storage_path="./data/altstore_storage")
+orchestrator_storage_path = os.getenv("ALTSTORE_STORAGE", "./data/altstore_storage")
+orchestrator = PlatformOrchestrator(storage_path=orchestrator_storage_path)
+logger.info(f"Orchestrator initialized with storage at {orchestrator_storage_path}")
 
 class SearchRequest(BaseModel):
     query: str
@@ -74,33 +114,117 @@ async def analyze_repo(owner: str, repo: str):
 
 @app.post("/install")
 async def install_app(request: InstallRequest, background_tasks: BackgroundTasks):
-    # This will be a long-running process, so we run it in the background
-    # and return a workflow ID immediately
-    workflow_id = f"wf_{request.github_repo.replace('/', '_')}_{int(asyncio.get_event_loop().time())}"
-    workflows[workflow_id] = {"status": "starting", "progress": 0, "repo": request.github_repo}
+    """
+    Install an application from GitHub repository.
     
-    background_tasks.add_task(run_installation, workflow_id, request.github_repo, request.user_preferences)
+    Returns a workflow ID immediately and processes the installation in the background.
+    Use GET /workflow/{workflow_id} to check status.
+    """
+    # Validate github_repo format
+    repo = request.github_repo.strip()
+    if '/' not in repo:
+        raise HTTPException(status_code=400, detail="Invalid repository format. Expected: owner/name")
     
+    # Generate unique workflow ID
+    workflow_id = f"wf_{repo.replace('/', '_')}_{int(asyncio.get_event_loop().time())}"
+    
+    # Initialize workflow with created timestamp
+    initial_data = {
+        "status": "starting",
+        "progress": 0,
+        "repo": repo,
+        "created_at": datetime.utcnow().isoformat() + 'Z'
+    }
+    
+    # Store workflow (works with both WorkflowStore and dict)
+    if hasattr(workflows, '__setitem__'):
+        workflows[workflow_id] = initial_data
+    else:
+        workflows[workflow_id] = initial_data
+    
+    # Schedule background installation
+    background_tasks.add_task(run_installation, workflow_id, repo, request.user_preferences)
+    
+    logger.info(f"Started installation workflow {workflow_id} for {repo}")
     return {"workflow_id": workflow_id, "status": "started"}
 
 async def run_installation(workflow_id: str, repo: str, preferences: Optional[Dict]):
+    """
+    Background task to process installation workflow.
+    
+    Updates workflow status at each stage.
+    """
     try:
-        workflows[workflow_id]["status"] = "in_progress"
-        # The orchestrator already handles the full workflow
+        # Update status to in_progress
+        if workflow_id in workflows:
+            workflow_data = workflows[workflow_id]
+            workflow_data["status"] = "in_progress"
+            workflow_data["stages"] = workflow_data.get("stages", {})
+            workflows[workflow_id] = workflow_data
+        
+        # Execute installation via orchestrator
         result = await orchestrator.discover_and_install(repo, user_preferences=preferences)
-        workflows[workflow_id]["status"] = "complete" if result.get("success") else "failed"
-        workflows[workflow_id]["result"] = result
-        if not result.get("success"):
-            workflows[workflow_id]["error"] = result.get("error")
+        
+        # Update workflow with result
+        if workflow_id in workflows:
+            workflow_data = workflows[workflow_id]
+            workflow_data["status"] = "complete" if result.get("success") else "failed"
+            workflow_data["result"] = result
+            workflow_data["progress"] = 100
+            workflow_data["_updated_at"] = datetime.utcnow().isoformat() + 'Z'
+            
+            if not result.get("success"):
+                workflow_data["error"] = result.get("error", "Unknown error")
+            
+            workflows[workflow_id] = workflow_data
+            
     except Exception as e:
-        workflows[workflow_id]["status"] = "failed"
-        workflows[workflow_id]["error"] = str(e)
+        logger.error(f"Installation workflow {workflow_id} failed: {e}")
+        if workflow_id in workflows:
+            workflow_data = workflows[workflow_id]
+            workflow_data["status"] = "failed"
+            workflow_data["error"] = str(e)
+            workflow_data["_updated_at"] = datetime.utcnow().isoformat() + 'Z'
+            workflows[workflow_id] = workflow_data
 
 @app.get("/workflow/{workflow_id}")
 async def get_workflow_status(workflow_id: str):
-    if workflow_id not in workflows:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-    return workflows[workflow_id]
+    """
+    Get status of an installation workflow.
+    
+    Returns workflow status, progress, and result if complete.
+    """
+    try:
+        if workflow_id not in workflows:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        
+        workflow_data = workflows[workflow_id]
+        
+        # Remove internal metadata from response
+        response_data = {
+            "workflow_id": workflow_id,
+            "status": workflow_data.get("status", "unknown"),
+            "progress": workflow_data.get("progress", 0),
+            "repo": workflow_data.get("repo", ""),
+            "created_at": workflow_data.get("created_at", ""),
+            "_updated_at": workflow_data.get("_updated_at", "")
+        }
+        
+        # Include result if available
+        if "result" in workflow_data:
+            response_data["result"] = workflow_data["result"]
+        
+        # Include error if failed
+        if workflow_data.get("status") == "failed" and "error" in workflow_data:
+            response_data["error"] = workflow_data["error"]
+        
+        return response_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving workflow {workflow_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve workflow: {str(e)}")
 
 @app.get("/apps")
 async def list_installed_apps():

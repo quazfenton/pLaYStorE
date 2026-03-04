@@ -8,6 +8,7 @@ import json
 import hashlib
 import tarfile
 import tempfile
+import logging
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,33 +16,28 @@ import zipfile
 from pathlib import Path
 import shutil
 
-# Handle cryptography import with fallback
+logger = logging.getLogger(__name__)
+
+# CRITICAL: Cryptography is REQUIRED for secure capsule operations
+# Do NOT allow mock implementations in production
 try:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa, padding
     from cryptography.exceptions import InvalidSignature
     CRYPTO_AVAILABLE = True
-except ImportError:
-    # Mock cryptography classes if not available
-    class MockPrivateKey:
-        def sign(self, data, padding, algorithm):
-            return b"mock_signature"
-
-    class MockPublicKey:
-        def verify(self, signature, data, padding, algorithm):
-            pass  # Always succeed in mock
-
-    def generate_private_key(public_exponent, key_size):
-        return MockPrivateKey()
-
-    def PKCS1v15():
-        return None
-
-    class SHA256:
-        pass
-
-    InvalidSignature = Exception
-    CRYPTO_AVAILABLE = False
+    logger.info("Cryptography library loaded successfully")
+except ImportError as e:
+    # FAIL SECURELY - Never allow mock signatures in production
+    # This prevents tampered capsules from passing verification
+    logger.error(
+        "CRITICAL: cryptography library is not available. "
+        "This library is REQUIRED for secure capsule signatures. "
+        "Install with: pip install cryptography>=41.0.0"
+    )
+    raise RuntimeError(
+        "cryptography library is required for secure operation. "
+        "Install with: pip install cryptography>=41.0.0"
+    ) from e
 
 from altstore.core.types.manifest_schema import AppManifest
 from altstore.core.security.reproducible_builds import BuildResult

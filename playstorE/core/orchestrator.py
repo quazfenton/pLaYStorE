@@ -17,11 +17,14 @@ import asyncio
 import json
 import tempfile
 import shutil
+import logging
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowStage(Enum):
@@ -54,8 +57,47 @@ class PlatformOrchestrator:
         storage_path: str = "./altstore_storage",
         github_token: Optional[str] = None
     ):
-        self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(parents=True, exist_ok=True)
+        import os
+        
+        # SECURITY: Validate and resolve storage path to prevent path traversal
+        storage_path_obj = Path(storage_path).resolve()
+        
+        # Ensure storage path is within current working directory or user's home
+        # This prevents attackers from specifying paths like /etc/passwd or ../../../sensitive
+        cwd = Path.cwd().resolve()
+        home = Path.home().resolve()
+        
+        # Check if path is within allowed directories
+        is_within_cwd = str(storage_path_obj).startswith(str(cwd))
+        is_within_home = str(storage_path_obj).startswith(str(home))
+        
+        if not (is_within_cwd or is_within_home):
+            raise ValueError(
+                f"Storage path must be within current directory or user home. "
+                f"Got: {storage_path_obj}, CWD: {cwd}, HOME: {home}. "
+                f"This restriction prevents path traversal attacks."
+            )
+        
+        # Additional check: reject paths containing traversal sequences
+        if '..' in str(storage_path):
+            raise ValueError(
+                f"Storage path contains directory traversal sequence '..'. "
+                f"Path provided: {storage_path}"
+            )
+        
+        self.storage_path = storage_path_obj
+        
+        # Create storage directories with safe permissions
+        try:
+            self.storage_path.mkdir(parents=True, exist_ok=True)
+            # Set directory permissions to user-only (Unix-like systems)
+            if os.name != 'nt':  # Not Windows
+                os.chmod(self.storage_path, 0o700)
+        except OSError as e:
+            raise RuntimeError(f"Failed to create storage directory: {e}")
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"Initialized orchestrator with storage path: {self.storage_path}")
         
         # Initialize subsystems
         from playstorE.client.github_explorer import GitHubExplorer

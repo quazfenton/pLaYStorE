@@ -256,36 +256,112 @@ class FederatedIndexNode:
         return signature.hex()
     
     def _verify_snapshot_signature(self, snapshot: Snapshot) -> bool:
-        """Verify a snapshot's signature"""
+        """
+        Verify a snapshot's signature using cryptographic verification.
+        
+        SECURITY: This method MUST verify signatures to prevent:
+        - Tampered snapshot data
+        - Rogue node injections
+        - Man-in-the-middle attacks
+        
+        Returns:
+            bool: True if signature is valid, False otherwise
+        """
+        # FAIL CLOSED: If cryptography is not available, reject all signatures
+        if not CRYPTO_AVAILABLE:
+            logger = logging.getLogger(__name__)
+            logger.error(
+                "Cryptography library not available - cannot verify snapshot signature. "
+                "This is a CRITICAL security failure. Install: pip install cryptography"
+            )
+            return False
+        
         try:
-            # Reconstruct the data that was signed
+            # Reconstruct the exact data that was signed
             snapshot_data = {
                 "apps": [self._serialize_app(app) for app in snapshot.apps],
                 "timestamp": snapshot.timestamp,
                 "node_id": snapshot.node_id,
                 "previous_snapshot_hash": snapshot.previous_snapshot_hash
             }
-            
+
             snapshot_json = json.dumps(snapshot_data, sort_keys=True)
             
-            # Get the publisher's public key (in a real system, this would come from a registry)
-            # For now, we'll assume we have a way to get the public key
-            # This is a simplification - in reality, you'd need a PKI system
-            # For this demo, we'll skip actual signature verification
+            # Validate signature format
+            if not snapshot.signature:
+                logger.warning(f"Empty signature for snapshot from node {snapshot.node_id}")
+                return False
             
-            # In a real implementation:
-            # public_key = self._get_publisher_public_key(snapshot.node_id)
-            # public_key.verify(
-            #     bytes.fromhex(snapshot.signature),
-            #     snapshot_json.encode(),
-            #     padding.PKCS1v15(),
-            #     hashes.SHA256()
-            # )
+            # Validate signature length (hex-encoded 2048-bit RSA signature = 512 hex chars)
+            if len(snapshot.signature) < 256:  # Minimum reasonable signature length
+                logger.warning(f"Signature too short for snapshot from node {snapshot.node_id}")
+                return False
+
+            # Get the publisher's public key from registry
+            # In production, this would use a PKI system or trusted key registry
+            public_key = self._get_publisher_public_key(snapshot.node_id)
+            if not public_key:
+                logger.error(f"No public key found for node {snapshot.node_id}")
+                return False
+
+            # Verify signature using cryptography library
+            public_key.verify(
+                bytes.fromhex(snapshot.signature),
+                snapshot_json.encode('utf-8'),
+                padding.PKCS1v15(),
+                hashes.SHA256()
+            )
             
-            # For this demo, return True (signature verification would go here)
+            logger.info(f"Snapshot signature verified for node {snapshot.node_id}")
             return True
-        except Exception:
+            
+        except InvalidSignature:
+            logger.error(f"Invalid signature for snapshot from node {snapshot.node_id}")
             return False
+        except Exception as e:
+            logger.error(f"Signature verification failed for node {snapshot.node_id}: {e}")
+            return False
+    
+    def _get_publisher_public_key(self, node_id: str):
+        """
+        Get public key for a publisher node.
+        
+        In production, this would use:
+        - A PKI (Public Key Infrastructure)
+        - A trusted key registry
+        - Key pinning from initial trust establishment
+        
+        For now, returns the key from a local registry or None.
+        """
+        # TODO: Implement proper PKI integration
+        # For now, check if we have a local key registry
+        if hasattr(self, 'public_key_registry') and node_id in self.public_key_registry:
+            return self.public_key_registry[node_id]
+        
+        # In production, fetch from trusted key server
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Public key not found for node {node_id} - signature verification will fail")
+        return None
+    
+    def register_public_key(self, node_id: str, public_key_pem: str):
+        """
+        Register a public key for a node (for testing/initial setup).
+        
+        Args:
+            node_id: The node identifier
+            public_key_pem: PEM-encoded public key
+        """
+        if not CRYPTO_AVAILABLE:
+            raise RuntimeError("Cryptography library required for key registration")
+        
+        if not hasattr(self, 'public_key_registry'):
+            self.public_key_registry = {}
+        
+        # Load and validate the public key
+        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        self.public_key_registry[node_id] = public_key
+        logger = logging.getLogger(__name__)
+        logger.info(f"Registered public key for node {node_id}")
     
     def _sign_app(self, app_entry: AppEntry) -> str:
         """Sign an app entry with the node's private key"""

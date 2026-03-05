@@ -109,35 +109,55 @@ class GitHubExplorer:
     ) -> List[GitHubRepo]:
         """
         Search GitHub repositories using the GitHub API.
-        
+
         Args:
-            query: Search query
+            query: Search query (1-256 characters, sanitized)
             filters: Optional filters (language, min_stars, topics, etc.)
-            limit: Maximum results to return
-        
+            limit: Maximum results to return (max 100)
+
         Returns:
             List of matching repositories
+
+        Raises:
+            ValueError: If query is invalid or too long
         """
+        # SECURITY: Sanitize and validate search query
+        query = self._sanitize_search_query(query)
+
         search_query = query
-        
+
         # Add filters to search query
         if filters:
             if "language" in filters:
-                search_query += f" language:{filters['language']}"
+                # Validate language filter
+                language = filters["language"]
+                if not re.match(r'^[a-zA-Z+\-#]+$', str(language)):
+                    raise ValueError(f"Invalid language filter: {language}")
+                search_query += f" language:{language}"
             if "min_stars" in filters:
-                search_query += f" stars:>={filters['min_stars']}"
+                # Validate min_stars is a positive integer
+                min_stars = filters["min_stars"]
+                if not isinstance(min_stars, int) or min_stars < 0:
+                    raise ValueError("min_stars must be a non-negative integer")
+                search_query += f" stars:>={min_stars}"
             if "topics" in filters:
                 for topic in filters["topics"]:
+                    # Validate topic format
+                    if not re.match(r'^[a-z0-9][a-z0-9\-]*$', str(topic).lower()):
+                        raise ValueError(f"Invalid topic format: {topic}")
                     search_query += f" topic:{topic}"
-        
+
+        # SECURITY: Limit results to prevent API abuse
+        limit = min(limit, 100)
+
         url = f"{self.base_url}/search/repositories"
         params = {
             "q": search_query,
             "sort": "stars",
             "order": "desc",
-            "per_page": min(limit, 100)
+            "per_page": limit
         }
-        
+
         session = await self._get_session()
         async with session.get(url, headers=self.headers, params=params) as resp:
             if resp.status != 200:
@@ -172,6 +192,52 @@ class GitHubExplorer:
                 repos.append(repo)
 
             return repos
+
+    def _sanitize_search_query(self, query: str) -> str:
+        """
+        Sanitize search query for GitHub API.
+
+        SECURITY: Prevents injection attacks and API abuse:
+        - Removes dangerous characters
+        - Blocks sensitive search operators
+        - Enforces length limits
+
+        Args:
+            query: Raw search query
+
+        Returns:
+            Sanitized search query
+
+        Raises:
+            ValueError: If query is empty, too long, or contains blocked operators
+        """
+        if not query or not isinstance(query, str):
+            raise ValueError("Search query must be a non-empty string")
+
+        # Enforce length limit (prevent DoS via long queries)
+        if len(query) > 256:
+            raise ValueError("Search query must be 256 characters or less")
+
+        # Remove potentially dangerous characters
+        # Keep alphanumeric, spaces, and common search operators
+        sanitized = re.sub(r'[<>"\'\\;`$|&]', '', query)
+
+        # Block dangerous GitHub search operators that could enable:
+        # - User enumeration (user:, org:)
+        # - Token/key exposure (token:, key:, secret:)
+        # - Repository access bypasses (is:private, is:internal)
+        dangerous_operators = [
+            'user:', 'org:', 'token:', 'key:', 'secret:',
+            'is:private', 'is:internal', 'label:', 'repo:'
+        ]
+
+        sanitized_lower = sanitized.lower()
+        for op in dangerous_operators:
+            if op in sanitized_lower:
+                raise ValueError(f"Search operator '{op.split(':')[0]}' is not allowed")
+
+        # Trim whitespace
+        return sanitized.strip()
     
     async def _get_latest_release(self, repo_full_name: str) -> Optional[str]:
         """Get latest release version for a repository"""

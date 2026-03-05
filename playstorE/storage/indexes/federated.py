@@ -243,15 +243,12 @@ class FederatedIndexNode:
 
         snapshot_json = json.dumps(snapshot_data, sort_keys=True)
 
-        if CRYPTO_AVAILABLE:
-            signature = self.private_key.sign(
-                snapshot_json.encode(),
-                padding.PKCS1v15(),
-                hashes.SHA256()
-            )
-        else:
-            # Create a mock signature when cryptography is not available
-            signature = hashlib.sha256(snapshot_json.encode()).digest()
+        # SECURITY: Cryptography is REQUIRED - no mock signatures allowed
+        signature = self.private_key.sign(
+            snapshot_json.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
 
         return signature.hex()
     

@@ -108,7 +108,9 @@ class PlatformOrchestrator:
         from playstorE.core.validation.formal_verifier import FormalManifestVerifier
         from playstorE.core.security.trust_model import SecurityManager
         from playstorE.core.security.reproducible_builds import ReproducibleBuildService
-        
+        from playstorE.core.build_cache import get_build_cache, BuildCache
+        from playstorE.storage.workflow_db import get_workflow_database, WorkflowDatabase
+
         self.github_explorer = GitHubExplorer(github_token)
         self.capsule_builder = OfflineCapsuleBuilder(str(self.storage_path / "capsules"))
         self.installer = OfflineInstallationManager(str(self.storage_path / "installations"))
@@ -118,9 +120,19 @@ class PlatformOrchestrator:
         self.security_manager = SecurityManager()
         self.reproducibility_engine = ReproducibleBuildService()
         
+        # Initialize build cache
+        cache_path = str(self.storage_path / "build_cache")
+        self.build_cache = get_build_cache(cache_path=cache_path, ttl_days=30, max_size_mb=500)
+        
+        # Initialize persistent workflow storage
+        workflow_db_path = str(self.storage_path / "workflows.db")
+        self.workflow_db = get_workflow_database(workflow_db_path)
+        
         # Workflow state
         self.current_workflow = None
-        self.workflow_history: List[Dict] = []
+        
+        # Recover running workflows from database on startup
+        self._recover_running_workflows()
     
     async def discover_and_install(
         self,
@@ -130,28 +142,33 @@ class PlatformOrchestrator:
     ) -> Dict[str, Any]:
         """
         Complete one-click workflow from GitHub repo to installed app.
-        
+
         Args:
             github_repo: GitHub repository (owner/name)
             install_path: Where to install (optional)
             user_preferences: User preferences (allow_wasm, sandbox_level, etc.)
-        
+
         Returns:
             Workflow result with final state and next steps
         """
         workflow_id = f"wf_{github_repo.replace('/', '_')}_{int(datetime.now().timestamp())}"
         user_preferences = user_preferences or {}
-        
+
         # Initialize workflow
         workflow_state = {
             "id": workflow_id,
+            "workflow_id": workflow_id,
             "repo": github_repo,
-            "started_at": datetime.now().isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
             "stages": {},
             "status": "running",
             "user_preferences": user_preferences
         }
         
+        # PERSISTENCE: Save initial workflow state to database
+        self.workflow_db.save_workflow(workflow_state)
+
         try:
             # Stage 1: Discovery & Analysis
             print(f"[{workflow_id}] Starting discovery and analysis...")
@@ -247,9 +264,28 @@ class PlatformOrchestrator:
             # Complete workflow
             workflow_state["status"] = "complete"
             workflow_state["completed_at"] = datetime.now().isoformat()
-            
-            self.workflow_history.append(workflow_state)
-            
+            workflow_state["updated_at"] = datetime.now().isoformat()
+
+            # PERSISTENCE: Update workflow in database
+            self.workflow_db.update_workflow_status(
+                workflow_id,
+                "complete",
+                stages=workflow_state["stages"],
+                result={
+                    "repo": github_repo,
+                    "manifest": manifest,
+                    "analysis": {
+                        "type": analysis_result.repo_type.value,
+                        "confidence": analysis_result.confidence,
+                        "wasm_compatible": analysis_result.wasm_compatible,
+                        "risk_score": analysis_result.risk_score
+                    },
+                    "security": security_result,
+                    "install_result": install_result,
+                    "capsule_path": capsule_path
+                }
+            )
+
             return {
                 "workflow_id": workflow_id,
                 "success": True,
@@ -270,8 +306,16 @@ class PlatformOrchestrator:
         except Exception as e:
             workflow_state["status"] = "failed"
             workflow_state["error"] = str(e)
-            self.workflow_history.append(workflow_state)
+            workflow_state["updated_at"] = datetime.now().isoformat()
             
+            # PERSISTENCE: Mark workflow as failed in database
+            self.workflow_db.update_workflow_status(
+                workflow_id,
+                "failed",
+                stages=workflow_state.get("stages", {}),
+                error=str(e)
+            )
+
             return {
                 "workflow_id": workflow_id,
                 "success": False,
@@ -308,32 +352,77 @@ class PlatformOrchestrator:
             }
     
     async def _stage_build(self, manifest: Dict) -> Optional[Dict]:
-        """Stage 3: Build application with actual build logic"""
+        """Stage 3: Build application with actual build logic.
+        
+        Uses build cache to avoid rebuilding unchanged repositories.
+        Cache key is computed from repo, commit, build strategy, and commands.
+        """
         try:
-            # Use the reproducibility engine to build the application
-            build_result = await self.reproducibility_engine.build_application(manifest)
-            
-            # If reproducibility engine returns a result, use it
-            if build_result:
-                return build_result
-            
-            # FALLBACK: Implement basic build logic if reproducibility engine doesn't return result
-            logger.info("Using fallback build logic")
-            
-            import hashlib
-            import subprocess
-            from pathlib import Path
-            
-            # Get source info from manifest
+            # Get source info from manifest for cache key computation
             source = manifest.get("source", {})
             repo_url = source.get("repo", "")
             commit = source.get("commit", "HEAD")
+            build_strategy = manifest.get("build", {}).get("strategy", "generic")
             build_commands = manifest.get("build", {}).get("commands", [])
             
+            # BUILD CACHE: Check if we have a cached build
+            logger.info(f"Checking build cache for {repo_url}@{commit}")
+            cached_entry = self.build_cache.get(
+                repo=repo_url,
+                commit=commit,
+                build_strategy=build_strategy,
+                build_commands=build_commands,
+                manifest=manifest
+            )
+            
+            if cached_entry:
+                # CACHE HIT: Return cached build result
+                logger.info(f"✅ BUILD CACHE HIT for {repo_url}@{commit}")
+                artifact_dir = self.build_cache.get_artifact_dir(cached_entry.cache_key)
+                
+                return {
+                    "success": True,
+                    "hash": cached_entry.build_hash,
+                    "reproducibility_level": "R2",  # Cached builds are reproducible
+                    "artifacts": cached_entry.artifact_paths,
+                    "build_path": str(artifact_dir) if artifact_dir else None,
+                    "timestamp": cached_entry.created_at,
+                    "cached": True,
+                    "cache_key": cached_entry.cache_key[:16] + "...",
+                    "warnings": ["Build retrieved from cache"]
+                }
+            
+            logger.info(f"❌ BUILD CACHE MISS for {repo_url}@{commit}, building...")
+            
+            # CACHE MISS: Try reproducibility engine first
+            build_result = await self.reproducibility_engine.build_application(manifest)
+
+            # If reproducibility engine returns a result, cache and return it
+            if build_result:
+                # Store in cache
+                if build_result.get("build_path"):
+                    self.build_cache.put(
+                        repo=repo_url,
+                        commit=commit,
+                        build_strategy=build_strategy,
+                        build_commands=build_commands,
+                        manifest=manifest,
+                        build_result=build_result,
+                        artifact_dir=build_result.get("build_path")
+                    )
+                return build_result
+
+            # FALLBACK: Implement basic build logic if reproducibility engine doesn't return result
+            logger.info("Using fallback build logic")
+
+            import hashlib
+            import subprocess
+            from pathlib import Path
+
             # Create temporary build directory
             with tempfile.TemporaryDirectory() as temp_dir:
                 build_path = Path(temp_dir)
-                
+
                 # Clone repository if repo URL provided
                 if repo_url:
                     logger.info(f"Cloning repository: {repo_url}")
@@ -350,7 +439,7 @@ class PlatformOrchestrator:
                     except subprocess.TimeoutExpired:
                         logger.error("Git clone timed out")
                         return None
-                
+
                 # Execute build commands if provided
                 artifacts = []
                 if build_commands:
@@ -371,7 +460,7 @@ class PlatformOrchestrator:
                                 logger.info(f"Build command {i+1} succeeded")
                         except subprocess.TimeoutExpired:
                             logger.warning(f"Build command {i+1} timed out")
-                
+
                 # Look for build artifacts
                 artifact_dirs = ["dist", "build", "out", "bin"]
                 for artifact_dir in artifact_dirs:
@@ -379,25 +468,41 @@ class PlatformOrchestrator:
                     if artifact_path.exists():
                         artifacts.append(str(artifact_path))
                         logger.info(f"Found artifacts in: {artifact_dir}")
-                
+
                 # Calculate build hash
                 build_hash = hashlib.sha256(
                     f"{repo_url}:{commit}:{datetime.now().isoformat()}".encode()
                 ).hexdigest()[:16]
-                
+
                 # Determine reproducibility level
                 reproducibility_level = "R2" if artifacts else "R1"
-                
-                return {
+
+                build_result_dict = {
                     "success": True,
                     "hash": build_hash,
                     "reproducibility_level": reproducibility_level,
                     "artifacts": artifacts,
                     "build_path": str(build_path / "src"),
                     "timestamp": datetime.now().isoformat(),
+                    "cached": False,
                     "warnings": []
                 }
                 
+                # Store in cache for future use
+                self.build_cache.put(
+                    repo=repo_url,
+                    commit=commit,
+                    build_strategy=build_strategy,
+                    build_commands=build_commands,
+                    manifest=manifest,
+                    build_result=build_result_dict,
+                    artifact_dir=str(build_path / "src")
+                )
+                
+                logger.info(f"✅ Build cached for {repo_url}@{commit}")
+
+                return build_result_dict
+
         except NotImplementedError:
             # If reproducibility engine is not implemented, use fallback build
             logger.warning("Reproducibility engine not implemented, using fallback build")
@@ -405,7 +510,7 @@ class PlatformOrchestrator:
         except Exception as e:
             logger.error(f"Build failed: {e}", exc_info=True)
             return None
-    
+
     async def _fallback_build(self, manifest: Dict) -> Optional[Dict]:
         """Fallback build when reproducibility engine is unavailable"""
         import hashlib
@@ -613,6 +718,96 @@ class PlatformOrchestrator:
                         apps.append(data)
         
         return apps
+
+    def _recover_running_workflows(self):
+        """
+        Recover running workflows from database on startup.
+        
+        Marks orphaned running workflows as failed (they were interrupted).
+        """
+        running_workflows = self.workflow_db.get_running_workflows()
+        recovered = 0
+        failed = 0
+        
+        for workflow in running_workflows:
+            workflow_id = workflow["workflow_id"]
+            
+            # Check if workflow is still valid (not expired)
+            created_at = datetime.fromisoformat(workflow["created_at"])
+            if datetime.now() - created_at > timedelta(days=7):
+                # Expired - mark as failed
+                self.workflow_db.update_workflow_status(
+                    workflow_id,
+                    "failed",
+                    error="Workflow expired during recovery"
+                )
+                failed += 1
+            else:
+                # Still valid - keep as running for potential resume
+                logger.info(f"Recovered running workflow: {workflow_id} ({workflow['repo']})")
+                recovered += 1
+        
+        if recovered > 0 or failed > 0:
+            logger.info(f"Workflow recovery: {recovered} running, {failed} expired")
+
+    def get_workflow_status(self, workflow_id: str) -> Optional[Dict]:
+        """Get status of a workflow from persistent storage"""
+        # First check database
+        workflow = self.workflow_db.get_workflow(workflow_id)
+        
+        if workflow:
+            return workflow
+        
+        # Fallback to in-memory history (for backwards compatibility)
+        for wf in self.workflow_db.get_workflows_by_status("complete", limit=1000):
+            if wf.get("workflow_id") == workflow_id:
+                return wf
+        
+        return None
+
+    def list_installed_apps(self) -> List[Dict[str, str]]:
+        """List all installed applications"""
+        apps = []
+        install_dir = self.storage_path / "installations" / "installed"
+
+        if install_dir.exists():
+            for app_dir in install_dir.iterdir():
+                if app_dir.is_dir():
+                    install_manifest = app_dir / "install.json"
+                    if install_manifest.exists():
+                        data = json.loads(install_manifest.read_text())
+                        apps.append(data)
+
+        return apps
+
+    def get_workflow_statistics(self) -> Dict[str, Any]:
+        """Get workflow statistics from database"""
+        return self.workflow_db.get_statistics()
+
+    def list_workflows(
+        self, 
+        limit: int = 100, 
+        offset: int = 0,
+        status_filter: Optional[str] = None,
+        repo_filter: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List workflows with filtering and pagination"""
+        if status_filter:
+            return self.workflow_db.get_workflows_by_status(
+                status_filter, 
+                limit=limit, 
+                repo_filter=repo_filter
+            )
+        else:
+            return self.workflow_db.list_workflows(
+                limit=limit, 
+                offset=offset, 
+                repo_filter=repo_filter
+            )
+
+    def cleanup_expired_workflows(self) -> int:
+        """Clean up expired workflows from database"""
+        return self.workflow_db.cleanup_expired()
 
 
 # Example usage and integration test

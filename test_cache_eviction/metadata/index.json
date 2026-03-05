@@ -1,0 +1,20 @@
+{
+  "f276400adad3465f3aedd858ff68436440b6793f4ab7d13c5f0204910d155fd3": {
+    "cache_key": "f276400adad3465f3aedd858ff68436440b6793f4ab7d13c5f0204910d155fd3",
+    "repo": "https://github.com/user/repo0",
+    "commit": "abc123",
+    "build_strategy": "docker",
+    "build_hash": "test123",
+    "artifact_paths": [
+      "C:\\Users\\ceclabs\\Downloads\\pLaYStorE\\test_cache_eviction\\artifacts\\f2\\76400adad3465f3aedd858ff68436440b6793f4ab7d13c5f0204910d155fd3\\artifact.txt",
+      "C:\\Users\\ceclabs\\Downloads\\pLaYStorE\\test_cache_eviction\\artifacts\\f2\\76400adad3465f3aedd858ff68436440b6793f4ab7d13c5f0204910d155fd3\\large.bin"
+    ],
+    "created_at": "2026-03-05T10:03:44.475119",
+    "last_accessed": "2026-03-05T10:03:44.475119",
+    "access_count": 0,
+    "manifest_hash": "10d3c406b997fe26c64a7675cdb8fd30cdd9f1858a63bafa174feecfe495d340",
+    "build_commands_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size_bytes": 307204,
+    "ttl_days": 30
+  }
+}

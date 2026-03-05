@@ -39,8 +39,8 @@ except ImportError as e:
         "Install with: pip install cryptography>=41.0.0"
     ) from e
 
-from altstore.core.types.manifest_schema import AppManifest
-from altstore.core.security.reproducible_builds import BuildResult
+from playstorE.core.types.manifest_schema import AppManifest
+from playstorE.core.security.reproducible_builds import BuildResult
 
 
 @dataclass
@@ -107,19 +107,17 @@ class ContentAddressableStorage:
 
 class CapsuleBuilder:
     """Builds installation capsules for offline distribution"""
-    
+
     def __init__(self, cas_storage: ContentAddressableStorage):
         self.cas = cas_storage
-        if CRYPTO_AVAILABLE:
-            self.private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048
-            )
-            self.public_key = self.private_key.public_key()
-        else:
-            # Use mock keys when cryptography is not available
-            self.private_key = generate_private_key(65537, 2048)
-            self.public_key = MockPublicKey()
+        # SECURITY: Cryptography is REQUIRED - the module will not load without it
+        # This generates a new key pair for signing capsules
+        # In production, load the private key from secure storage (HSM/KMS)
+        self.private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048
+        )
+        self.public_key = self.private_key.public_key()
     
     def build_capsule(self, manifest: AppManifest, build_result: BuildResult, 
                      platform: str = "universal") -> str:
@@ -181,18 +179,13 @@ class CapsuleBuilder:
             }
             
             # Sign the metadata
+            # SECURITY: Cryptography is REQUIRED - signatures prevent tampering
             metadata_json = json.dumps(metadata_dict, sort_keys=True).encode()
-            
-            if CRYPTO_AVAILABLE:
-                signature = self.private_key.sign(
-                    metadata_json,
-                    padding.PKCS1v15(),
-                    hashes.SHA256()
-                )
-            else:
-                # Create a mock signature when cryptography is not available
-                signature = hashlib.sha256(metadata_json).digest()
-            
+            signature = self.private_key.sign(
+                metadata_json,
+                padding.PKCS1v15(),
+                hashes.SHA256()
+            )
             metadata.signature = signature.hex()
             
             # Update metadata with signature
@@ -246,26 +239,22 @@ class CapsuleBuilder:
                 metadata_dict = json.loads(metadata_content)
                 
                 # Verify signature
+                # SECURITY: Cryptographic verification is REQUIRED to prevent tampered capsules
                 signature_hex = metadata_dict.pop("signature", "")
                 if not signature_hex:
                     return False, "No signature found in capsule", None
-                
+
                 metadata_json = json.dumps(metadata_dict, sort_keys=True).encode()
                 
-                if CRYPTO_AVAILABLE:
-                    try:
-                        self.public_key.verify(
-                            bytes.fromhex(signature_hex),
-                            metadata_json,
-                            padding.PKCS1v15(),
-                            hashes.SHA256()
-                        )
-                    except InvalidSignature:
-                        return False, "Invalid signature", None
-                else:
-                    # Fail verification if cryptography is not available
-                    # This prevents tampered capsules from passing verification
-                    return False, "Cryptography unavailable - cannot verify signature", None
+                try:
+                    self.public_key.verify(
+                        bytes.fromhex(signature_hex),
+                        metadata_json,
+                        padding.PKCS1v15(),
+                        hashes.SHA256()
+                    )
+                except InvalidSignature:
+                    return False, "Invalid signature - capsule may be tampered", None
                 
                 # Reconstruct metadata object
                 metadata = CapsuleMetadata(
@@ -333,24 +322,20 @@ class CapsuleVerifier:
 
                 # Use provided public key or instance public key
                 verification_key = public_key or self.public_key
-
-                if CRYPTO_AVAILABLE and verification_key:
-                    try:
-                        verification_key.verify(
-                            bytes.fromhex(signature_hex),
-                            metadata_json,
-                            padding.PKCS1v15(),
-                            hashes.SHA256()
-                        )
-                    except InvalidSignature:
-                        return False, "Invalid signature", None
-                elif not CRYPTO_AVAILABLE:
-                    # Fail verification if cryptography is not available
-                    # This prevents tampered capsules from passing verification
-                    return False, "Cryptography unavailable - cannot verify signature", None
-                else:
-                    # No public key provided for verification
+                
+                if not verification_key:
                     return False, "Public key not provided for signature verification", None
+
+                # SECURITY: Cryptographic verification is REQUIRED to prevent tampered capsules
+                try:
+                    verification_key.verify(
+                        bytes.fromhex(signature_hex),
+                        metadata_json,
+                        padding.PKCS1v15(),
+                        hashes.SHA256()
+                    )
+                except InvalidSignature:
+                    return False, "Invalid signature - capsule may be tampered", None
 
                 # Reconstruct metadata object
                 metadata = CapsuleMetadata(

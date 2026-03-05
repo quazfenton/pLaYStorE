@@ -113,7 +113,7 @@ class AppCard:
         self.tags = tags or []
     
     def to_html(self) -> str:
-        """Render as HTML card"""
+        """Render as HTML card with comprehensive XSS protection"""
         trust_icons = {
             TrustLevel.VERIFIED: "🔒",
             TrustLevel.REPRODUCIBLE: "🟡",
@@ -128,30 +128,39 @@ class AppCard:
             TrustLevel.UNKNOWN: "#6b7280"
         }
 
-        # Escape all user-provided data to prevent XSS
+        # SECURITY: Escape all user-provided data to prevent XSS
         safe_app_id = html.escape(self.app_id, quote=True)
         safe_name = html.escape(self.name, quote=True)
         safe_publisher = html.escape(self.publisher, quote=True)
         safe_description = html.escape(self.description, quote=True)
         safe_tags = [html.escape(tag, quote=True) for tag in self.tags]
-        
-        # Sanitize icon URL to prevent javascript: or data: URIs
-        safe_icon_url = self.icon_url
-        if self.icon_url and (self.icon_url.startswith(('http://', 'https://', '//'))):
-            safe_icon_url = html.escape(self.icon_url, quote=True)
-        else:
-            safe_icon_url = None  # Don't render unsafe URLs
+
+        # SECURITY: JavaScript-escape for onclick handlers (additional escaping beyond HTML)
+        # This prevents breaking out of string context in JavaScript
+        js_safe_app_id = safe_app_id.replace('\\', '\\\\').replace("'", "\\'").replace('"', '&quot;')
+
+        # SECURITY: Validate icon URL to prevent javascript:, data:, and other dangerous schemes
+        safe_icon_url = None
+        if self.icon_url:
+            if self._is_safe_url(self.icon_url):
+                safe_icon_url = html.escape(self.icon_url, quote=True)
+
+        # SECURITY: Validate screenshot URL
+        safe_screenshot_url = None
+        if self.screenshot_url:
+            if self._is_safe_url(self.screenshot_url):
+                safe_screenshot_url = html.escape(self.screenshot_url, quote=True)
 
         html_str = f"""
 <div class="app-card" data-app-id="{safe_app_id}">
     <div class="app-card-header">
-        {'<img src="' + safe_icon_url + '" class="app-icon" />' if safe_icon_url else '<div class="app-icon-placeholder">📦</div>'}
+        {'<img src="' + safe_icon_url + '" class="app-icon" alt="' + safe_name + ' icon" />' if safe_icon_url else '<div class="app-icon-placeholder">📦</div>'}
         <div class="app-info">
             <h3 class="app-name">{safe_name}</h3>
             <p class="app-publisher">by {safe_publisher}</p>
             <div class="app-meta">
                 <span class="trust-indicator" style="color: {trust_colors[self.trust_level]}">
-                    {trust_icons[self.trust_level]} {self.trust_level.value.capitalize()}
+                    {trust_icons[self.trust_level]} {html.escape(self.trust_level.value, quote=True)}
                 </span>
                 <span class="app-stars">⭐ {self.stars:.1f}</span>
                 <span class="app-downloads">{self.download_count} downloads</span>
@@ -164,16 +173,63 @@ class AppCard:
     {'<div class="app-tags">' + ''.join(f'<span class="tag">{tag}</span>' for tag in safe_tags) + '</div>' if safe_tags else ''}
 
     <div class="app-actions">
-        <button class="btn btn-primary install-btn" onclick="installApp('{safe_app_id}')">
+        <button class="btn btn-primary install-btn" onclick="installApp('{js_safe_app_id}')">
             ⬇️ Install
         </button>
-        <button class="btn btn-secondary more-info-btn" onclick="expandCard('{safe_app_id}')">
+        <button class="btn btn-secondary more-info-btn" onclick="expandCard('{js_safe_app_id}')">
             More Info
         </button>
     </div>
 </div>
 """
         return html_str
+
+    def _is_safe_url(self, url: str) -> bool:
+        """
+        Validate URL is safe for rendering in HTML.
+
+        SECURITY: Prevents XSS attacks via dangerous URL schemes:
+        - javascript: URLs (script execution)
+        - data: URLs (embedded scripts)
+        - vbscript: URLs (legacy script execution)
+        - file: URLs (local file access)
+
+        Args:
+            url: URL to validate
+
+        Returns:
+            True if URL is safe, False otherwise
+        """
+        if not url or not isinstance(url, str):
+            return False
+
+        # Strip whitespace and convert to lowercase for checking
+        url_lower = url.lower().strip()
+
+        # Block dangerous schemes
+        dangerous_schemes = [
+            'javascript:', 'data:', 'vbscript:', 'file:',
+            'blob:', 'about:', 'moz-extension:', 'chrome-extension:'
+        ]
+
+        if any(url_lower.startswith(scheme) for scheme in dangerous_schemes):
+            return False
+
+        # Allow http, https, and protocol-relative URLs
+        if url_lower.startswith(('http://', 'https://', '//')):
+            return True
+
+        # Allow relative URLs that don't start with dangerous patterns
+        # Check for obfuscated dangerous schemes (e.g., "java\nscript:")
+        url_no_whitespace = ''.join(url_lower.split())
+        if any(url_no_whitespace.startswith(scheme.replace(' ', '')) for scheme in dangerous_schemes):
+            return False
+
+        # Allow relative URLs
+        if not url_lower.startswith(('http://', 'https://', '//', '<', '>', '"', "'")):
+            return True
+
+        return False
     
     def to_json(self) -> Dict:
         """Export as JSON for API"""

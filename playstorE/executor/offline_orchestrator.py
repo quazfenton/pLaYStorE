@@ -14,6 +14,8 @@ making AltStore viable for restricted environments (air-gapped, field work, offl
 import os
 import json
 import hashlib
+import logging
+import tarfile
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -21,6 +23,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import shutil
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionMode(Enum):
@@ -378,61 +382,78 @@ class OfflineInstallationManager:
     def _extract_capsule(self, capsule_path: str, extract_dir: Path):
         """
         Extract capsule archive with comprehensive security validation.
-        
+
         SECURITY: Validates ALL members BEFORE extracting ANY to prevent:
         - Path traversal attacks (../../etc/passwd)
         - Absolute path injection (/etc/passwd)
         - Symlink attacks
         - Windows path separator injection
+        - Data URLs and other malicious content
+
+        Raises:
+            ValueError: If any security violation is detected
+            FileNotFoundError: If capsule file doesn't exist
+            tarfile.TarError: If capsule is corrupted
         """
-        import tarfile
-        import os
-        
-        logger = logging.getLogger(__name__)
         logger.info(f"Extracting capsule {capsule_path} to {extract_dir}")
-        
+
+        # Validate capsule file exists
+        if not os.path.exists(capsule_path):
+            raise FileNotFoundError(f"Capsule file not found: {capsule_path}")
+
         with tarfile.open(capsule_path, "r:gz") as tar:
             # CRITICAL: Validate ALL members BEFORE extracting ANY
             # This prevents TOCTOU (time-of-check-time-of-use) attacks
             validation_errors = []
-            
+            safe_members = []
+
             for member in tar.getmembers():
                 member_name = member.name
-                
-                # Check 1: Reject null bytes in names
+
+                # Check 1: Reject null bytes in names (prevents null byte injection)
                 if '\x00' in member_name:
                     validation_errors.append(f"Null byte in member name: {member_name}")
                     continue
-                
-                # Check 2: Normalize path to handle .. and symlinks
+
+                # Check 2: Reject excessively long paths (prevents buffer overflow attempts)
+                if len(member_name) > 512:
+                    validation_errors.append(f"Path too long (max 512 chars): {member_name[:100]}...")
+                    continue
+
+                # Check 3: Normalize path to handle .. and symlinks
                 # Use os.path.normpath to collapse redundant separators and up-level references
                 normalized_name = os.path.normpath(member_name)
-                
-                # Check 3: Reject path traversal attempts
-                if normalized_name.startswith('..'):
-                    validation_errors.append(f"Path traversal detected (starts with ..): {member_name}")
+
+                # Check 4: Reject path traversal attempts using ..
+                if normalized_name.startswith('..') or '/..' in normalized_name or normalized_name.startswith('..'):
+                    validation_errors.append(f"Path traversal detected (..): {member_name}")
                     continue
-                
-                # Check 4: Reject absolute paths
-                if os.path.isabs(normalized_name):
+
+                # Check 5: Reject absolute paths (Unix-style)
+                if normalized_name.startswith('/'):
                     validation_errors.append(f"Absolute path detected: {member_name}")
                     continue
-                
-                # Check 5: Reject Windows-style paths (cross-platform security)
+
+                # Check 6: Reject Windows-style absolute paths
+                if len(member_name) > 1 and member_name[1] == ':':
+                    validation_errors.append(f"Windows absolute path detected: {member_name}")
+                    continue
+
+                # Check 7: Reject Windows-style paths (cross-platform security)
                 if '\\' in member_name:
                     validation_errors.append(f"Windows path separator detected: {member_name}")
                     continue
-                
-                # Check 6: Reject names starting with /
+
+                # Check 8: Reject names starting with /
                 if member_name.startswith('/'):
                     validation_errors.append(f"Path starts with /: {member_name}")
                     continue
-                
-                # Check 7: Ensure resolved path is within extract_dir
+
+                # Check 9: Ensure resolved path is within extract_dir
                 # This is the final safety net
                 member_path = (extract_dir / normalized_name).resolve()
                 extract_dir_resolved = extract_dir.resolve()
-                
+
                 try:
                     # Use os.path.commonpath for reliable prefix checking
                     common = os.path.commonpath([str(member_path), str(extract_dir_resolved)])
@@ -443,14 +464,30 @@ class OfflineInstallationManager:
                     # commonpath raises ValueError if paths are on different drives (Windows)
                     validation_errors.append(f"Invalid path comparison: {member_name} ({e})")
                     continue
-                
-                # Check 8: Reject symlinks pointing outside extract_dir
+
+                # Check 10: Reject symlinks pointing outside extract_dir
                 if member.issym() or member.islnk():
                     link_target = member.linkname
-                    if os.path.isabs(link_target) or '..' in link_target:
+                    # Normalize symlink target
+                    normalized_target = os.path.normpath(link_target)
+                    if os.path.isabs(normalized_target) or '..' in normalized_target:
                         validation_errors.append(f"Symlink escapes directory: {member_name} -> {link_target}")
                         continue
-            
+
+                # Check 11: Reject device files, FIFOs, and other special files
+                if not (member.isfile() or member.isdir() or member.issym()):
+                    validation_errors.append(f"Unsupported file type: {member_name} (type: {member.type})")
+                    continue
+
+                # Check 12: Reject files with suspicious names
+                suspicious_names = ['passwd', 'shadow', 'sudoers', '.ssh', 'authorized_keys']
+                if any(suspicious in member_name.lower() for suspicious in suspicious_names):
+                    validation_errors.append(f"Suspicious filename: {member_name}")
+                    continue
+
+                # All checks passed - add to safe members list
+                safe_members.append(member)
+
             # If ANY validation failed, raise error BEFORE extraction
             if validation_errors:
                 error_msg = f"Capsule extraction failed - {len(validation_errors)} security violations:\n"
@@ -460,10 +497,34 @@ class OfflineInstallationManager:
                     error_msg += f"  ... and {len(validation_errors) - 10} more"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
-            
-            # ALL validations passed - safe to extract
-            logger.info(f"Capsule validation passed - {len(tar.getmembers())} members")
-            tar.extractall(extract_dir)
+
+            # ALL validations passed - safe to extract only validated members
+            logger.info(f"Capsule validation passed - {len(safe_members)} safe members")
+
+            # SECURITY: Extract only validated members with additional safety filters
+            # Python 3.12+ supports filter='data' which provides additional protection
+            for member in safe_members:
+                # Double-check: Skip symlinks entirely for maximum security
+                if member.issym() or member.islnk():
+                    logger.warning(f"Skipping symlink during extraction: {member.name}")
+                    continue
+                
+                # Extract with explicit path validation
+                member_path = (extract_dir / member.name).resolve()
+                extract_dir_resolved = extract_dir.resolve()
+                
+                # Final safety check before extraction
+                try:
+                    common = os.path.commonpath([str(member_path), str(extract_dir_resolved)])
+                    if common != str(extract_dir_resolved):
+                        logger.error(f"SECURITY: Path escapes extraction directory (skipping): {member.name}")
+                        continue
+                except ValueError:
+                    logger.error(f"SECURITY: Invalid path (skipping): {member.name}")
+                    continue
+                
+                tar.extract(member, extract_dir)
+
             logger.info(f"Capsule extracted successfully to {extract_dir}")
     
     def _verify_capsule_integrity(

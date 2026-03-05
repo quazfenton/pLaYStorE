@@ -242,7 +242,7 @@ class TrustEvaluator:
 
 class SecurityOrchestrator:
     """Orchestrates security policies and enforcement"""
-    
+
     def __init__(self):
         self.policy_templates = {
             TrustLevel.VERIFIED: SecurityPolicy(
@@ -269,12 +269,14 @@ class SecurityOrchestrator:
                 resource_limits={"cpu": 0.25, "memory_mb": 512},
                 execution_environment="wasm"
             ),
+            # SECURITY: UNVERIFIED apps get MAXIMUM RESTRICTIONS
+            # No filesystem access, minimal resources, strict WASM sandbox
             TrustLevel.UNVERIFIED: SecurityPolicy(
                 network_access=False,
-                filesystem_access="readonly",
+                filesystem_access="none",  # SECURITY FIX: Changed from "readonly" to "none"
                 gpu_access=False,
                 privilege_elevation=False,
-                resource_limits={"cpu": 0.1, "memory_mb": 256},
+                resource_limits={"cpu": 0.1, "memory_mb": 128},  # SECURITY FIX: Reduced from 256MB
                 execution_environment="wasm"
             )
         }

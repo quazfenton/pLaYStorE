@@ -1,20 +1,55 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 import asyncio
 import os
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
+import time
+import platform
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from playstorE.core.orchestrator import PlatformOrchestrator
 from playstorE.client.github_explorer import GitHubExplorer
 from playstorE.storage.workflow_store import WorkflowStore
+from playstorE.core.security.middleware import setup_security_middleware
+from playstorE.core.errors import setup_error_handlers, AltStoreError, ValidationError, SecurityError
 
 logger = logging.getLogger(__name__)
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/minute", "10/second"])
+
 app = FastAPI(title="AltStore API", description="Backend API for the Alternative App Store")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Set up error handlers
+setup_error_handlers(app)
+
+# Configure security middleware with CSP and audit logging
+security_config = {
+    "csp_default_src": ["'self'"],
+    "csp_script_src": ["'self'"],  # No inline scripts
+    "csp_style_src": ["'self'"],  # No inline styles
+    "csp_img_src": ["'self'", "data:", "https:"],
+    "csp_font_src": ["'self'"],
+    "csp_connect_src": ["'self'", "https://api.github.com"],
+    "csp_frame_ancestors": ["'none'"],  # Prevent clickjacking
+    "hsts_max_age": 31536000,  # 1 year
+    "hsts_include_subdomains": True,
+    "hsts_preload": True,
+    "audit_log_level": "INFO",
+}
+
+# Add security middleware (must be added early in middleware chain)
+setup_security_middleware(app, security_config)
 
 # Configure CORS with secure defaults
 # Get allowed origins from environment variable (comma-separated for multiple origins)
@@ -24,16 +59,20 @@ allowed_origins = [url.strip() for url in frontend_urls.split(",") if url.strip(
 # Security: Validate origins to prevent misconfiguration
 validated_origins = []
 for origin in allowed_origins:
+    # SECURITY: NEVER allow wildcard origins - this enables CSRF attacks
+    if origin == "*" or origin.startswith("*."):
+        logger.error(f"SECURITY ERROR: Wildcard CORS origin not allowed: {origin}. This is a critical security vulnerability.")
+        continue
     # Only allow http/https schemes
     if origin.startswith(("http://", "https://")):
         validated_origins.append(origin)
     else:
         logger.warning(f"Invalid CORS origin (must start with http:// or https://): {origin}")
 
-# Fallback to localhost if no valid origins
+# SECURITY: Fail closed - require explicit origin configuration
 if not validated_origins:
     validated_origins = ["http://localhost:3000"]
-    logger.info("Using default CORS origin: http://localhost:3000")
+    logger.warning("No valid CORS origins configured. Using localhost default. SET FRONTEND_URL in production!")
 
 logger.info(f"CORS enabled for origins: {validated_origins}")
 
@@ -64,13 +103,48 @@ orchestrator = PlatformOrchestrator(storage_path=orchestrator_storage_path)
 logger.info(f"Orchestrator initialized with storage at {orchestrator_storage_path}")
 
 class SearchRequest(BaseModel):
-    query: str
-    limit: Optional[int] = 20
-    filters: Optional[Dict[str, Any]] = None
+    query: str = Field(..., min_length=1, max_length=500, description="Search query")
+    limit: Optional[int] = Field(default=20, ge=1, le=100, description="Max results to return")
+    filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
+
+    @field_validator('query')
+    @classmethod
+    def validate_query(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Query cannot be empty')
+        # Prevent SQL injection patterns
+        sql_patterns = ['--', ';', 'DROP ', 'SELECT ', 'UNION ', 'INSERT ', 'DELETE ', 'UPDATE ']
+        for pattern in sql_patterns:
+            if pattern.lower() in v.lower():
+                raise ValueError(f'Invalid query pattern detected: {pattern}')
+        return v.strip()
+
+    @field_validator('limit')
+    @classmethod
+    def validate_limit(cls, v):
+        if v is None:
+            return 20
+        return max(1, min(v, 100))
+
 
 class InstallRequest(BaseModel):
-    github_repo: str
-    user_preferences: Optional[Dict[str, Any]] = None
+    github_repo: str = Field(..., min_length=3, max_length=200, description="GitHub repository in format owner/name")
+    user_preferences: Optional[Dict[str, Any]] = Field(default=None, description="User preferences")
+
+    @field_validator('github_repo')
+    @classmethod
+    def validate_github_repo(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Repository name cannot be empty')
+        v = v.strip()
+        # Validate GitHub repository format: owner/name
+        pattern = r'^[a-zA-Z0-9_-]+/[a-zA-Z0-9._-]+$'
+        if not re.match(pattern, v):
+            raise ValueError('Invalid repository format. Expected: owner/name (e.g., torvalds/linux)')
+        # Prevent path traversal
+        if '..' in v or v.startswith('/') or v.startswith('\\'):
+            raise ValueError('Invalid repository name: path traversal not allowed')
+        return v
 
 # Store workflow status in memory for demo purposes
 # In production, use a database or persistent cache
@@ -80,20 +154,75 @@ workflows = {}
 async def root():
     return {"message": "AltStore API is running", "version": "1.0.0"}
 
+
+@app.get("/health", tags=["health"])
+async def health_check():
+    """
+    Health check endpoint - returns basic health status.
+    Used for liveness probes.
+    """
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
+
+
+@app.get("/health/ready", tags=["health"])
+async def readiness_check():
+    """
+    Readiness check endpoint - verifies all dependencies are available.
+    Used for readiness probes.
+    """
+    checks = {
+        "orchestrator": orchestrator is not None,
+        "workflow_store": workflows is not None,
+    }
+    
+    all_healthy = all(checks.values())
+    
+    if all_healthy:
+        return {
+            "status": "ready",
+            "checks": checks,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+    else:
+        failed = [k for k, v in checks.items() if not v]
+        raise JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "not_ready",
+                "failed_checks": failed,
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }
+        )
+
+
+@app.get("/health/live", tags=["health"])
+async def liveness_check():
+    """
+    Liveness check endpoint - confirms the process is alive.
+    Used for Kubernetes liveness probes.
+    """
+    return {"status": "alive"}
+
 @app.post("/search")
-async def search_repos(request: SearchRequest):
+@limiter.limit("100/minute")
+async def search_repos(request: Request, search_request: SearchRequest):
     try:
         repos = await orchestrator.github_explorer.search_repos(
-            query=request.query,
-            filters=request.filters,
-            limit=request.limit
+            query=search_request.query,
+            filters=search_request.filters,
+            limit=search_request.limit
         )
         return {"results": [vars(repo) for repo in repos]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/analyze/{owner}/{repo}")
-async def analyze_repo(owner: str, repo: str):
+@limiter.limit("30/minute")
+async def analyze_repo(request: Request, owner: str, repo: str):
     repo_full_name = f"{owner}/{repo}"
     try:
         analysis = await orchestrator.github_explorer.analyze_repo(repo_full_name)
@@ -113,21 +242,22 @@ async def analyze_repo(owner: str, repo: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/install")
-async def install_app(request: InstallRequest, background_tasks: BackgroundTasks):
+@limiter.limit("10/minute")
+async def install_app(request: Request, install_request: InstallRequest, background_tasks: BackgroundTasks):
     """
     Install an application from GitHub repository.
-    
+
     Returns a workflow ID immediately and processes the installation in the background.
     Use GET /workflow/{workflow_id} to check status.
     """
     # Validate github_repo format
-    repo = request.github_repo.strip()
+    repo = install_request.github_repo.strip()
     if '/' not in repo:
         raise HTTPException(status_code=400, detail="Invalid repository format. Expected: owner/name")
-    
+
     # Generate unique workflow ID
     workflow_id = f"wf_{repo.replace('/', '_')}_{int(asyncio.get_event_loop().time())}"
-    
+
     # Initialize workflow with created timestamp
     initial_data = {
         "status": "starting",
@@ -135,16 +265,16 @@ async def install_app(request: InstallRequest, background_tasks: BackgroundTasks
         "repo": repo,
         "created_at": datetime.utcnow().isoformat() + 'Z'
     }
-    
+
     # Store workflow (works with both WorkflowStore and dict)
     if hasattr(workflows, '__setitem__'):
         workflows[workflow_id] = initial_data
     else:
         workflows[workflow_id] = initial_data
-    
+
     # Schedule background installation
-    background_tasks.add_task(run_installation, workflow_id, repo, request.user_preferences)
-    
+    background_tasks.add_task(run_installation, workflow_id, repo, install_request.user_preferences)
+
     logger.info(f"Started installation workflow {workflow_id} for {repo}")
     return {"workflow_id": workflow_id, "status": "started"}
 
@@ -231,6 +361,110 @@ async def list_installed_apps():
     # In a real app, this would query the installation manager
     # For now, we'll return the history from orchestrator
     return {"apps": orchestrator.workflow_history}
+
+
+@app.get("/cache/metrics", tags=["cache"])
+async def get_cache_metrics():
+    """
+    Get build cache performance metrics.
+    
+    Returns:
+    - hits: Number of cache hits
+    - misses: Number of cache misses
+    - hit_rate: Cache hit rate (0.0 - 1.0)
+    - total_size_mb: Total cache size in MB
+    - entry_count: Number of cached builds
+    """
+    metrics = orchestrator.build_cache.get_metrics()
+    return metrics.to_dict()
+
+
+@app.get("/cache/entries", tags=["cache"])
+async def list_cache_entries():
+    """
+    List all cached builds with metadata.
+    
+    Returns list of cache entries with:
+    - cache_key: Short cache key identifier
+    - repo: Repository URL
+    - commit: Commit hash
+    - created_at: When the build was cached
+    - last_accessed: Last access time
+    - access_count: Number of times accessed
+    - size_mb: Cache entry size in MB
+    - ttl_days_remaining: Days until expiration
+    """
+    entries = orchestrator.build_cache.list_entries()
+    return {"entries": entries, "count": len(entries)}
+
+
+@app.delete("/cache/invalidate/{repo:path}", tags=["cache"])
+async def invalidate_cache_entry(repo: str, commit: Optional[str] = None):
+    """
+    Invalidate cache entries for a repository.
+    
+    If commit is provided, only invalidates that specific commit.
+    Otherwise, invalidates all entries for the repository.
+    
+    Returns the number of entries invalidated.
+    """
+    count = orchestrator.build_cache.invalidate(repo, commit)
+    return {
+        "invalidated": count,
+        "repo": repo,
+        "commit": commit
+    }
+
+
+@app.delete("/cache/clear", tags=["cache"])
+async def clear_cache():
+    """
+    Clear all cache entries.
+    
+    WARNING: This removes all cached builds and requires rebuilding from scratch.
+    """
+    orchestrator.build_cache.clear()
+    return {"message": "Cache cleared successfully"}
+
+
+@app.post("/cache/warm", tags=["cache"])
+@limiter.limit("5/minute")
+async def warm_cache(request: Request, repo: str, commit: Optional[str] = None):
+    """
+    Pre-warm cache by building a repository.
+    
+    This triggers a build and caches the result for future use.
+    Useful for pre-building popular repositories during off-peak hours.
+    """
+    try:
+        # Analyze repo first
+        analysis = await orchestrator.github_explorer.analyze_repo(repo)
+        if not analysis or not analysis.is_safe:
+            raise HTTPException(status_code=400, detail="Repository analysis failed")
+        
+        manifest = analysis.suggested_manifest
+        if commit:
+            manifest["source"]["commit"] = commit
+        
+        # Build and cache
+        build_result = await orchestrator._stage_build(manifest)
+        
+        if build_result and build_result.get("cached"):
+            return {
+                "status": "cached",
+                "repo": repo,
+                "cache_key": build_result.get("cache_key"),
+                "message": "Build retrieved from cache"
+            }
+        else:
+            return {
+                "status": "built",
+                "repo": repo,
+                "build_hash": build_result.get("hash") if build_result else None,
+                "message": "Build completed and cached"
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

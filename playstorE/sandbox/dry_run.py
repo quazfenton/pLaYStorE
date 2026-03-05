@@ -185,23 +185,23 @@ class DryRunSandbox:
     def detect_malware_static(self, manifest: AppManifest) -> MalwareDetectionResult:
         """
         Perform comprehensive static malware detection on the app manifest and source.
-        
+
         Analyzes:
         - Repository name and description
         - Build commands
         - Dependencies
         - Source code patterns
         - Permissions requested
-        
+
         Args:
             manifest: App manifest to analyze
-            
+
         Returns:
             Malware detection result
         """
         risk_score = 0.0
         findings = []
-        
+
         # Check for suspicious source patterns
         if manifest.source.repo:
             repo_lower = manifest.source.repo.lower()
@@ -210,7 +210,7 @@ class DryRunSandbox:
                 if pattern in repo_lower:
                     risk_score += 0.3
                     findings.append(f"Suspicious repository name contains '{pattern}'")
-        
+
         # Check build commands for dangerous patterns
         build_commands = manifest.build.commands if manifest.build else []
         dangerous_patterns = [
@@ -227,28 +227,28 @@ class DryRunSandbox:
             ("eval(", 0.6, "Dynamic code execution"),
             ("exec(", 0.5, "Code execution"),
         ]
-        
+
         for cmd in build_commands:
             cmd_lower = cmd.lower()
             for pattern, score, description in dangerous_patterns:
                 if pattern in cmd_lower:
                     risk_score += score
                     findings.append(f"Dangerous build command: {pattern} - {description}")
-        
+
         # Check dependencies for known malicious packages
         dependencies = manifest.dependencies or []
         malicious_packages = [
             "cryptojack", "miner", "stealer", "keylogger", "rat", "backdoor",
             "trojan", "worm", "rootkit", "spyware"
         ]
-        
+
         for dep in dependencies:
             dep_lower = dep.lower()
             for pattern in malicious_packages:
                 if pattern in dep_lower:
                     risk_score += 0.6
                     findings.append(f"Suspicious dependency: {dep}")
-        
+
         # Check permissions
         permissions = manifest.security.permissions if manifest.security else []
         dangerous_permissions = [
@@ -263,14 +263,14 @@ class DryRunSandbox:
             ("RECORD_AUDIO", 0.4, "Record audio"),
             ("ACCESS_FINE_LOCATION", 0.4, "Precise location access"),
         ]
-        
+
         for perm in permissions:
             perm_upper = perm.upper()
             for pattern, score, description in dangerous_permissions:
                 if pattern in perm_upper:
                     risk_score += score
                     findings.append(f"Dangerous permission: {perm} - {description}")
-        
+
         # Determine result based on risk score
         if risk_score >= 0.8:
             return MalwareDetectionResult.MALICIOUS

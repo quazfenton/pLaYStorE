@@ -184,7 +184,14 @@ class DryRunSandbox:
     
     def detect_malware_static(self, manifest: AppManifest) -> MalwareDetectionResult:
         """
-        Perform static malware detection on the app manifest and source.
+        Perform comprehensive static malware detection on the app manifest and source.
+        
+        Analyzes:
+        - Repository name and description
+        - Build commands
+        - Dependencies
+        - Source code patterns
+        - Permissions requested
         
         Args:
             manifest: App manifest to analyze
@@ -193,27 +200,194 @@ class DryRunSandbox:
             Malware detection result
         """
         risk_score = 0.0
+        findings = []
         
         # Check for suspicious source patterns
         if manifest.source.repo:
             repo_lower = manifest.source.repo.lower()
-            if any(suspicious in repo_lower for suspicious in ["malware", "hacker", "crack", "keygen"]):
-                risk_score += 0.5
+            suspicious_repo_patterns = ["malware", "hacker", "crack", "keygen", "cheat", "hack"]
+            for pattern in suspicious_repo_patterns:
+                if pattern in repo_lower:
+                    risk_score += 0.3
+                    findings.append(f"Suspicious repository name contains '{pattern}'")
         
-        # Check for suspicious build commands
-        if manifest.build.commands:
-            for cmd in manifest.build.commands:
-                cmd_lower = cmd.lower()
-                if any(suspicious in cmd_lower for suspicious in ["curl | sh", "wget http", "chmod +x", "rm -rf"]):
-                    risk_score += 0.4
+        # Check build commands for dangerous patterns
+        build_commands = manifest.build.commands if manifest.build else []
+        dangerous_patterns = [
+            ("curl | sh", 0.5, "Downloads and executes remote script"),
+            ("wget http", 0.4, "Downloads from HTTP (insecure)"),
+            ("chmod +x", 0.2, "Makes file executable"),
+            ("rm -rf", 0.6, "Recursive force delete"),
+            ("sudo", 0.4, "Requests root privileges"),
+            ("su ", 0.5, "Switch user command"),
+            ("stratum+tcp", 0.8, "Cryptocurrency mining protocol"),
+            ("xmrig", 0.9, "Known cryptocurrency miner"),
+            ("miner", 0.7, "Mining-related command"),
+            ("base64 -d", 0.4, "Decodes base64 (potential obfuscation)"),
+            ("eval(", 0.6, "Dynamic code execution"),
+            ("exec(", 0.5, "Code execution"),
+        ]
         
-        # Check for overly permissive security settings
-        if manifest.security.network != NetworkPolicy.NONE:
+        for cmd in build_commands:
+            cmd_lower = cmd.lower()
+            for pattern, score, description in dangerous_patterns:
+                if pattern in cmd_lower:
+                    risk_score += score
+                    findings.append(f"Dangerous build command: {pattern} - {description}")
+        
+        # Check dependencies for known malicious packages
+        dependencies = manifest.dependencies or []
+        malicious_packages = [
+            "cryptojack", "miner", "stealer", "keylogger", "rat", "backdoor",
+            "trojan", "worm", "rootkit", "spyware"
+        ]
+        
+        for dep in dependencies:
+            dep_lower = dep.lower()
+            for pattern in malicious_packages:
+                if pattern in dep_lower:
+                    risk_score += 0.6
+                    findings.append(f"Suspicious dependency: {dep}")
+        
+        # Check permissions
+        permissions = manifest.security.permissions if manifest.security else []
+        dangerous_permissions = [
+            ("INTERNET", 0.2, "Network access"),
+            ("READ_EXTERNAL_STORAGE", 0.3, "Read external storage"),
+            ("WRITE_EXTERNAL_STORAGE", 0.4, "Write external storage"),
+            ("READ_CONTACTS", 0.5, "Read contacts"),
+            ("SEND_SMS", 0.7, "Send SMS messages"),
+            ("RECEIVE_SMS", 0.7, "Receive SMS messages"),
+            ("READ_CALL_LOG", 0.6, "Read call logs"),
+            ("CAMERA", 0.3, "Camera access"),
+            ("RECORD_AUDIO", 0.4, "Record audio"),
+            ("ACCESS_FINE_LOCATION", 0.4, "Precise location access"),
+        ]
+        
+        for perm in permissions:
+            perm_upper = perm.upper()
+            for pattern, score, description in dangerous_permissions:
+                if pattern in perm_upper:
+                    risk_score += score
+                    findings.append(f"Dangerous permission: {perm} - {description}")
+        
+        # Determine result based on risk score
+        if risk_score >= 0.8:
+            return MalwareDetectionResult.MALICIOUS
+        elif risk_score >= 0.5:
+            return MalwareDetectionResult.SUSPICIOUS
+        elif risk_score > 0:
+            return MalwareDetectionResult.UNKNOWN
+        else:
+            return MalwareDetectionResult.SAFE
+    
+    def detect_malware_behavioral(self, telemetry: BehavioralTelemetry) -> MalwareDetectionResult:
+        """
+        Perform behavioral malware detection based on runtime telemetry.
+        
+        Analyzes:
+        - Network behavior
+        - Filesystem access
+        - Process behavior
+        - Resource usage
+        - Suspicious patterns
+        
+        Args:
+            telemetry: Behavioral telemetry from dry-run execution
+            
+        Returns:
+            Malware detection result
+        """
+        risk_score = 0.0
+        findings = []
+        
+        # Port binding analysis
+        if telemetry.binds_port:
+            if telemetry.port_number and telemetry.port_number < 1024:
+                risk_score += 0.4  # Privileged port
+                findings.append(f"Binds to privileged port {telemetry.port_number}")
+            elif telemetry.port_number and telemetry.port_number in [4444, 5555, 6666, 31337]:
+                risk_score += 0.7  # Known malware ports
+                findings.append(f"Binds to suspicious port {telemetry.port_number}")
+            else:
+                risk_score += 0.2  # Normal port binding
+                findings.append(f"Binds to port {telemetry.port_number}")
+        
+        # Long-running process analysis
+        if telemetry.long_running:
+            if telemetry.network_attempts > 5:
+                risk_score += 0.5  # Long-running + network = potential C2
+                findings.append("Long-running process with high network activity")
+            elif telemetry.network_attempts > 0:
+                risk_score += 0.3
+                findings.append("Long-running process with network activity")
+            else:
+                risk_score += 0.1  # Could be legitimate server
+                findings.append("Long-running process detected")
+        
+        # Network behavior analysis
+        if telemetry.network_attempts > 10:
+            risk_score += 0.6
+            findings.append(f"Excessive network attempts ({telemetry.network_attempts})")
+        elif telemetry.network_attempts > 5:
+            risk_score += 0.3
+            findings.append(f"High network activity ({telemetry.network_attempts} attempts)")
+        
+        # Filesystem violation analysis
+        if telemetry.fs_violations > 5:
+            risk_score += 0.5
+            findings.append(f"Multiple filesystem violations ({telemetry.fs_violations})")
+        elif telemetry.fs_violations > 0:
             risk_score += 0.2
-        if manifest.security.filesystem != FilesystemPolicy.READONLY:
-            risk_score += 0.1
-        if manifest.security.allow_gpu:
-            risk_score += 0.1
+            findings.append(f"Filesystem violations detected ({telemetry.fs_violations})")
+        
+        # CPU anomaly detection
+        if telemetry.cpu_anomaly:
+            risk_score += 0.5
+            findings.append("Anomalous CPU usage detected (potential mining)")
+        
+        # Hidden process detection
+        if telemetry.hidden_processes:
+            risk_score += 0.8
+            findings.append("Hidden processes detected (strong malware indicator)")
+        
+        # Crypto-related activity
+        if telemetry.crypto_related_calls > 10:
+            risk_score += 0.7
+            findings.append(f"High crypto-related activity ({telemetry.crypto_related_calls} calls)")
+        elif telemetry.crypto_related_calls > 0:
+            risk_score += 0.3
+            findings.append(f"Crypto-related activity detected ({telemetry.crypto_related_calls} calls)")
+        
+        # Suspicious string patterns
+        suspicious_string_scores = {
+            "curl | sh": 0.7,
+            "wget http": 0.5,
+            "chmod +x": 0.3,
+            "rm -rf": 0.6,
+            "/usr/bin": 0.2,
+            "sudo": 0.4,
+            "su ": 0.5,
+            "stratum+tcp": 0.9,  # Mining protocol
+            "xmrig": 0.9,  # Known miner
+            "miner": 0.7,
+            "base64": 0.4,
+            "eval(": 0.6,
+            "exec(": 0.5,
+        }
+        
+        for suspicious_str in telemetry.suspicious_strings:
+            for pattern, score in suspicious_string_scores.items():
+                if pattern in suspicious_str.lower():
+                    risk_score += score
+                    findings.append(f"Suspicious pattern detected: {pattern}")
+                    break
+        
+        # Exit code analysis
+        if telemetry.exit_code != 0:
+            if telemetry.exit_code < 0:
+                risk_score += 0.2  # Negative exit codes can indicate crash or signal
+                findings.append(f"Abnormal exit code: {telemetry.exit_code}")
         
         # Determine result based on risk score
         if risk_score >= 0.8:
